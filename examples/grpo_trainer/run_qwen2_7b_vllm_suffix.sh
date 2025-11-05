@@ -1,6 +1,6 @@
 set -x
 
-
+export NCCL_DEBUG=WARN
 gsm8k_train_path=/mnt/hdfs/ccchang_hldy/data/gsm8k/train.parquet
 gsm8k_test_path=/mnt/hdfs/ccchang_hldy/data/gsm8k/test.parquet
 math_train_path=/mnt/hdfs/ccchang_hldy/data/math/train.parquet
@@ -37,15 +37,16 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.n=5 \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=32 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
+    +actor_rollout_ref.rollout.engine_kwargs.vllm.speculative_config.method=suffix \
+    +actor_rollout_ref.rollout.engine_kwargs.vllm.speculative_config.num_speculative_tokens=5 \
     algorithm.use_kl_in_reward=False \
     trainer.critic_warmup=0 \
     trainer.logger='["console","wandb"]' \
     trainer.project_name='verl_grpo_example_gsm8k_math_cc' \
-    trainer.experiment_name='qwen2_7b_0918_lr1.5-e6' \
+    trainer.experiment_name='qwen2_7b_1104_suffix_default_d5' \
     trainer.n_gpus_per_node=8 \
     trainer.nnodes=1 \
-    trainer.save_freq=1 \
+    trainer.save_freq=20 \
     trainer.test_freq=5 \
-    trainer.default_local_dir="/mnt/hdfs/__MERLIN_USER_DIR__/verl_ckpt/qwen2-7b_grpo_gsm8_lr_1.5e-6" \
-    trainer.rollout_data_dir="/mnt/hdfs/__MERLIN_USER_DIR__/rollout_data/qwen2-7b_grpo_gsm8k_lr_1.5e-6" \
+    trainer.default_local_dir="/mnt/hdfs/__MERLIN_USER_DIR__/verl_ckpt/qwen2-7b_grpo_gsm8_temp1104" \
     trainer.total_epochs=15 $@

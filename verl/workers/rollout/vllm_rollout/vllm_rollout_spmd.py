@@ -216,6 +216,7 @@ class vLLMRollout(BaseRollout):
             else:
                 logger.warning(f"cudagraph_capture_sizes must be a list, but got {cudagraph_capture_sizes}")
 
+        logger.info("vLLM engine_kwargs: %s", engine_kwargs)
         self.inference_engine = LLM(
             model=model_path,
             enable_sleep_mode=config.free_cache_engine,
