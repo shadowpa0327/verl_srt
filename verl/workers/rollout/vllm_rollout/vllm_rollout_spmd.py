@@ -243,7 +243,9 @@ class vLLMRollout(BaseRollout):
 
         kwargs = dict(
             n=1,
-            logprobs=0,  # can be set to 0 and let actor to recompute
+            #logprobs=0,  # can be set to 0 and let actor to recompute
+            #NOTE(brian1009) set to None otherwise spec decode won't go.
+            logprobs=None,
             max_tokens=config.response_length,
             repetition_penalty=config.get("repetition_penalty", 1.0),
         )
@@ -390,6 +392,60 @@ class vLLMRollout(BaseRollout):
                         for i, logprob in enumerate(output.outputs[sample_id].logprobs):
                             curr_log_prob.append(logprob[response_ids[i]].logprob)
                         rollout_log_probs.append(curr_log_prob)
+
+            # ---------------- NEW: stats logging (no prints, use logger) ----------------
+            # We try to pull vLLM runtime metrics; gracefully degrade if unsupported.
+            spec_metrics: Dict[str, Any] = {}
+            try:
+                # vLLM exposes this on the llm engine
+                metrics = self.inference_engine.llm_engine.get_metrics()
+            except AssertionError:
+                logger.info("Metrics are not supported in the V0 engine.")
+            except Exception as e:
+                logger.warning(f"Fetching vLLM metrics failed: {e}")
+            else:
+                # Aggregate counters across workers
+                num_drafts = 0
+                num_draft_tokens = 0
+                num_accepted_tokens = 0
+                acceptance_counts: List[int] = []  # will grow to max vector length seen
+
+                for metric in metrics:
+                    name = getattr(metric, "name", None)
+                    # Counter-style metrics
+                    if name == "vllm:spec_decode_num_drafts":
+                        num_drafts += int(getattr(metric, "value", 0))
+                    elif name == "vllm:spec_decode_num_draft_tokens":
+                        num_draft_tokens += int(getattr(metric, "value", 0))
+                    elif name == "vllm:spec_decode_num_accepted_tokens":
+                        num_accepted_tokens += int(getattr(metric, "value", 0))
+                    # Vector-style metric (acceptance per token position)
+                    elif name == "vllm:spec_decode_num_accepted_tokens_per_pos":
+                        values = list(getattr(metric, "values", []))
+                        if values:
+                            # grow acceptance_counts to fit
+                            if len(values) > len(acceptance_counts):
+                                acceptance_counts.extend([0] * (len(values) - len(acceptance_counts)))
+                            for i, v in enumerate(values):
+                                acceptance_counts[i] += int(v)
+
+                total_num_output_tokens = sum(len(r) for r in response)
+                acceptance_length = 1.0 + (num_accepted_tokens / num_drafts) if num_drafts > 0 else 1.0
+
+                # Log a compact summary
+                logger.info(
+                    "vLLM speculative decoding stats | total_output_tokens=%d num_drafts=%d "
+                    "num_draft_tokens=%d num_accepted_tokens=%d mean_acceptance_length=%.2f",
+                    total_num_output_tokens, num_drafts, num_draft_tokens, num_accepted_tokens, acceptance_length,
+                )
+
+                # Log per-position acceptance rates (only if we have drafts)
+                if num_drafts > 0 and acceptance_counts:
+                    for i, cnt in enumerate(acceptance_counts):
+                        rate = cnt / num_drafts
+                        logger.debug("spec_decode acceptance_at_token_pos[%d]=%.6f", i, rate)
+            # ---------------- END NEW: stats logging ----------------
+
 
             response = pad_2d_list_to_length(response, self.pad_token_id, max_length=self.config.response_length).to(
                 idx.device

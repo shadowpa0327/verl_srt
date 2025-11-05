@@ -34,6 +34,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.tensor_model_parallel_size=2 \
     actor_rollout_ref.rollout.name=vllm \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
+    actor_rollout_ref.rollout.disable_log_stats=False \
     actor_rollout_ref.rollout.n=5 \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=32 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
@@ -48,5 +49,5 @@ python3 -m verl.trainer.main_ppo \
     trainer.nnodes=1 \
     trainer.save_freq=20 \
     trainer.test_freq=5 \
-    trainer.default_local_dir="/mnt/hdfs/__MERLIN_USER_DIR__/verl_ckpt/qwen2-7b_grpo_gsm8_temp1104" \
+    trainer.default_local_dir="/mnt/hdfs/__MERLIN_USER_DIR__/verl_ckpt/qwen2-7b_grpo_gsm8k_suffix_decode" \
     trainer.total_epochs=15 $@
