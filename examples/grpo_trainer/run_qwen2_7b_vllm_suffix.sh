@@ -40,14 +40,15 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     +actor_rollout_ref.rollout.engine_kwargs.vllm.speculative_config.method=suffix \
     +actor_rollout_ref.rollout.engine_kwargs.vllm.speculative_config.num_speculative_tokens=5 \
+    +actor_rollout_ref.rollout.engine_kwargs.vllm.speculative_config.max_cached_requests=0 \
     algorithm.use_kl_in_reward=False \
     trainer.critic_warmup=0 \
     trainer.logger='["console","wandb"]' \
     trainer.project_name='verl_grpo_example_gsm8k_math_cc' \
-    trainer.experiment_name='qwen2_7b_1104_suffix_default_d5' \
+    trainer.experiment_name='qwen2_7b_1104_suffix_default_d5_no_global' \
     trainer.n_gpus_per_node=8 \
     trainer.nnodes=1 \
     trainer.save_freq=20 \
     trainer.test_freq=5 \
-    trainer.default_local_dir="/mnt/hdfs/__MERLIN_USER_DIR__/verl_ckpt/qwen2-7b_grpo_gsm8k_suffix_decode" \
+    trainer.default_local_dir="/mnt/hdfs/__MERLIN_USER_DIR__/verl_ckpt/qwen2-7b_grpo_gsm8k_suffix_decode_no_global" \
     trainer.total_epochs=15 $@
