@@ -3,7 +3,7 @@ set -xeuo pipefail
 export NCCL_DEBUG=WARN
 
 project_name='DAPO_SRT'
-exp_name='DAPO-Qwen2.5-7b-MATH-suffix-d3-no-global-1106a1-1n-8h800-updateCG'
+exp_name='DAPO-Qwen2.5-7b-MATH-suffix-d3-no-global-1106a1-1n-8h800-updateCG-tb128-new'
 
 adv_estimator=grpo
 
@@ -23,7 +23,7 @@ overlong_penalty_factor=1.0
 
 loss_agg_mode="token-mean"
 
-train_prompt_bsz=512
+train_prompt_bsz=128
 n_resp_per_prompt=16
 train_prompt_mini_bsz=32
 
@@ -79,7 +79,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.clip_ratio_c=10.0 \
     actor_rollout_ref.model.use_remove_padding=True \
     +actor_rollout_ref.model.override_config.max_position_embeddings=32768 \
-    actor_rollout_ref.rollout.cudagraph_capture_sizes="[1,2,4,8,16,32,64,128,192,256,320,384,448,512,768,1024,1536]" \
+    actor_rollout_ref.rollout.cudagraph_capture_sizes='[1,2,4,8,16,32,64,128,192,256,320,384,448,512,768,896]' \
     actor_rollout_ref.actor.use_dynamic_bsz=${use_dynamic_bsz} \
     actor_rollout_ref.ref.log_prob_use_dynamic_bsz=${use_dynamic_bsz} \
     actor_rollout_ref.rollout.log_prob_use_dynamic_bsz=${use_dynamic_bsz} \
@@ -117,7 +117,8 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.fsdp_config.fsdp_size=${fsdp_size} \
     +actor_rollout_ref.rollout.engine_kwargs.vllm.speculative_config.method=suffix \
     +actor_rollout_ref.rollout.engine_kwargs.vllm.speculative_config.num_speculative_tokens=3 \
-    +actor_rollout_ref.rollout.engine_kwargs.vllm.speculative_config.max_cached_requests=0 \
+    +actor_rollout_ref.rollout.engine_kwargs.vllm.speculative_config.suffix_decoding_max_cached_requests=0 \
+    +actor_rollout_ref.rollout.engine_kwargs.vllm.cuda_graph_sizes='[1,2,4,8,16,32,64,128,192,256,320,384,448,512,768,896]' \
     reward_model.reward_manager=dapo \
     +reward_model.reward_kwargs.overlong_buffer_cfg.enable=${enable_overlong_buffer} \
     +reward_model.reward_kwargs.overlong_buffer_cfg.len=${overlong_buffer_len} \
