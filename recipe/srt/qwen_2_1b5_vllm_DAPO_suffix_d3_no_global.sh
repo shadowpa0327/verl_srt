@@ -2,7 +2,7 @@
 set -xeuo pipefail
 
 project_name='DAPO_SRT'
-exp_name='DAPO-Qwen2.5-1.5b-no-spec-1106a1-1n-8h20'
+exp_name='DAPO-Qwen2.5-1.5b-suffix-d3-no-global-1106a1-1n-8h800-updateCG-tb128-new'
 
 adv_estimator=grpo
 
