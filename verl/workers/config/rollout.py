@@ -120,6 +120,8 @@ class SuffixDecodingConfig(BaseConfig):
     max_tree_depth: int = 24
     # Auto-manage server lifecycle (start/stop)
     auto_manage_server: bool = True
+    # Use server mode (suffix_remote) vs local mode (suffix with parallel decoding)
+    server_mode: bool = True
 
 
 @dataclass

@@ -234,26 +234,46 @@ class vLLMRollout(BaseRollout):
         suffix_config = config.suffix_decoding
         if isinstance(suffix_config, dict):
             suffix_enable = suffix_config.get("enable", False)
+            server_mode = suffix_config.get("server_mode", True)
         else:
             suffix_enable = getattr(suffix_config, "enable", False)
+            server_mode = getattr(suffix_config, "server_mode", True)
 
         if suffix_enable:
-            if isinstance(suffix_config, dict):
-                speculative_config = {
-                    "method": "suffix_remote",
-                    "num_speculative_tokens": suffix_config.get("num_speculative_tokens", 5),
-                    "suffix_decoding_server_host": suffix_config.get("server_host", "localhost"),
-                    "suffix_decoding_server_port": suffix_config.get("server_port", 50051),
-                    "suffix_decoding_max_tree_depth": suffix_config.get("max_tree_depth", 24),
-                }
+            if server_mode:
+                # Use suffix_remote method (client mode connecting to remote server)
+                if isinstance(suffix_config, dict):
+                    speculative_config = {
+                        "method": "suffix_remote",
+                        "num_speculative_tokens": suffix_config.get("num_speculative_tokens", 5),
+                        "suffix_decoding_server_host": suffix_config.get("server_host", "localhost"),
+                        "suffix_decoding_server_port": suffix_config.get("server_port", 50051),
+                        "suffix_decoding_max_tree_depth": suffix_config.get("max_tree_depth", 24),
+                    }
+                else:
+                    speculative_config = {
+                        "method": "suffix_remote",
+                        "num_speculative_tokens": suffix_config.num_speculative_tokens,
+                        "suffix_decoding_server_host": suffix_config.server_host,
+                        "suffix_decoding_server_port": suffix_config.server_port,
+                        "suffix_decoding_max_tree_depth": suffix_config.max_tree_depth,
+                    }
             else:
-                speculative_config = {
-                    "method": "suffix_remote",
-                    "num_speculative_tokens": suffix_config.num_speculative_tokens,
-                    "suffix_decoding_server_host": suffix_config.server_host,
-                    "suffix_decoding_server_port": suffix_config.server_port,
-                    "suffix_decoding_max_tree_depth": suffix_config.max_tree_depth,
-                }
+                # Use suffix method (local parallel suffix decoding)
+                if isinstance(suffix_config, dict):
+                    speculative_config = {
+                        "method": "suffix",
+                        "num_speculative_tokens": suffix_config.get("num_speculative_tokens", 5),
+                        "suffix_decoding_max_tree_depth": suffix_config.get("max_tree_depth", 24),
+                        "suffix_decoding_parallel": True,
+                    }
+                else:
+                    speculative_config = {
+                        "method": "suffix",
+                        "num_speculative_tokens": suffix_config.num_speculative_tokens,
+                        "suffix_decoding_max_tree_depth": suffix_config.max_tree_depth,
+                        "suffix_decoding_parallel": True,
+                    }
             logger.info(f"Suffix decoding enabled with config: {speculative_config}")
 
         self.inference_engine = LLM(
