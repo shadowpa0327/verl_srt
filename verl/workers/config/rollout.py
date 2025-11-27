@@ -28,6 +28,7 @@ __all__ = [
     "TraceConfig",
     "ServerConfig",
     "PrometheusConfig",
+    "SuffixDecodingConfig",
     "RolloutConfig",
 ]
 
@@ -106,6 +107,19 @@ class PrometheusConfig(BaseConfig):
     file: str = "/tmp/ray/session_latest/metrics/prometheus/prometheus.yml"
     # Specify served_model_name to avoid displaying overly long model paths in Grafana
     served_model_name: Optional[str] = None
+
+
+@dataclass
+class SuffixDecodingConfig(BaseConfig):
+    """Configuration for suffix remote speculative decoding"""
+
+    enable: bool = False
+    server_host: str = "localhost"
+    server_port: int = 50051
+    num_speculative_tokens: int = 5
+    max_tree_depth: int = 24
+    # Auto-manage server lifecycle (start/stop)
+    auto_manage_server: bool = True
 
 
 @dataclass
@@ -195,6 +209,8 @@ class RolloutConfig(BaseConfig):
     sglang_engine_mode: str = "local"
 
     limit_images: Optional[int] = None
+
+    suffix_decoding: SuffixDecodingConfig = field(default_factory=SuffixDecodingConfig)
 
     skip_tokenizer_init: bool = False
 

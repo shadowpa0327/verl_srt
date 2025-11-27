@@ -314,3 +314,27 @@ prometheus:
   # Specify served_model_name to avoid displaying overly long model paths in Grafana
   served_model_name: ${oc.select:actor_rollout_ref.model.path,null}
 
+# Suffix remote speculative decoding configuration
+suffix_decoding:
+
+  # Required when using verl.utils.omega_conf_to_dataclass to instantiate dataclass configs
+  _target_: verl.workers.config.SuffixDecodingConfig
+
+  # Enable suffix remote speculative decoding
+  enable: false
+
+  # gRPC server host address
+  server_host: localhost
+
+  # gRPC server port
+  server_port: 50051
+
+  # Number of speculative tokens
+  num_speculative_tokens: 5
+
+  # Maximum tree depth for suffix decoding
+  max_tree_depth: 24
+
+  # Auto-manage server lifecycle (start/stop)
+  auto_manage_server: true
+
