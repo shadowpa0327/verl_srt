@@ -283,7 +283,9 @@ class vLLMRollout(BaseRollout):
 
         kwargs = dict(
             n=1,
-            logprobs=0,  # can be set to 0 and let actor to recompute
+            #logprobs=0,  # can be set to 0 and let actor to recompute
+            #NOTE(brian1009) set to None otherwise spec decode won't go.
+            logprobs=None,
             max_tokens=config.response_length,
             repetition_penalty=config.get("repetition_penalty", 1.0),
         )
@@ -437,8 +439,8 @@ class vLLMRollout(BaseRollout):
             try:
                 # vLLM exposes this on the llm engine
                 metrics = self.inference_engine.llm_engine.get_metrics()
-            except AssertionError:
-                logger.info("Metrics are not supported in the V0 engine.")
+            except AssertionError as e:
+                logger.info(f"Metrics are not supported in the V0 engine: {e}")
             except Exception as e:
                 logger.warning(f"Fetching vLLM metrics failed: {e}")
             else:
@@ -447,7 +449,6 @@ class vLLMRollout(BaseRollout):
                 num_draft_tokens = 0
                 num_accepted_tokens = 0
                 acceptance_counts: List[int] = []  # will grow to max vector length seen
-
                 for metric in metrics:
                     name = getattr(metric, "name", None)
                     # Counter-style metrics

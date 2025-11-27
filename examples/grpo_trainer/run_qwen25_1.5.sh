@@ -1,6 +1,5 @@
-#!/bin/bash
 # Tested successfully on the hiyouga/verl:ngc-th2.6.0-cu126-vllm0.8.4-flashinfer0.2.2-cxx11abi0 image.
-# This script enables suffix remote speculative decoding for faster inference during PPO training.
+# It outperforms the Qwen2 7B base model by two percentage points on the test set of GSM8K.
 
 set -x
 
@@ -29,21 +28,14 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.name=vllm \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
-    actor_rollout_ref.rollout.disable_log_stats=False \
     actor_rollout_ref.rollout.n=5 \
-    actor_rollout_ref.rollout.suffix_decoding.enable=true \
-    actor_rollout_ref.rollout.suffix_decoding.server_host=localhost \
-    actor_rollout_ref.rollout.suffix_decoding.server_port=50051 \
-    actor_rollout_ref.rollout.suffix_decoding.num_speculative_tokens=3 \
-    actor_rollout_ref.rollout.suffix_decoding.max_tree_depth=24 \
-    actor_rollout_ref.rollout.suffix_decoding.auto_manage_server=true \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=16 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     algorithm.use_kl_in_reward=False \
     trainer.critic_warmup=0 \
-    trainer.logger='["console","wandb"]' \
-    trainer.project_name='verl_grpo_suffix_decoding' \
-    trainer.experiment_name='qwen2.5_1.5b_suffix_remote' \
+    trainer.logger='["console", "wandb"]' \
+    trainer.project_name='verl_grpo_example_gsm8k' \
+    trainer.experiment_name='qwen25_1.5b_function_rm' \
     trainer.n_gpus_per_node=8 \
     trainer.nnodes=1 \
     trainer.save_freq=20 \
