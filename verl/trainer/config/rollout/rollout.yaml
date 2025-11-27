@@ -338,3 +338,8 @@ suffix_decoding:
   # Auto-manage server lifecycle (start/stop)
   auto_manage_server: true
 
+  # Use server mode (suffix_remote) vs local mode (suffix with parallel decoding)
+  # When true: uses suffix_remote method with gRPC server (client mode)
+  # When false: uses suffix method with local parallel decoding
+  server_mode: true
+
