@@ -9,11 +9,27 @@ set -e  # Exit on error
 # ----------
 # Configuration
 # ----------
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VERL_ROOT="$(dirname "$SCRIPT_DIR")"
+
 PYTHON_VERSION="3.11"
 PYTHON_VERSION_SHORT="311"
 TORCH_VERSION="2.8"
-FLASHINFER_VERSION="0.4.1"
+FLASHINFER_VERSION="0.3.1"
 VENV_DIR="${VENV_DIR:-.venv}"
+
+# Third-party dependencies directory
+THIRD_PARTY_DIR="${VERL_ROOT}/third_party"
+
+# vLLM - cloned under third_party for co-development
+VLLM_REPO="https://github.com/shadowpa0327/vllm.git"
+VLLM_BRANCH="suffix_decode"
+VLLM_DIR="${THIRD_PARTY_DIR}/vllm"
+
+# ArcticInference - cloned under third_party for co-development
+ARCTIC_REPO="https://github.com/shadowpa0327/ArcticInference_srt.git"
+ARCTIC_BRANCH="dev/grpc_server"
+ARCTIC_DIR="${THIRD_PARTY_DIR}/ArcticInference_srt"
 
 # Proxy settings (set these if needed)
 # export https_proxy="http://your-proxy:port"
@@ -68,10 +84,10 @@ uv pip install --python "${VENV_DIR}/bin/python" "${URL}"
 # ------------
 echo ">>> Installing FlashInfer ${FLASHINFER_VERSION}..."
 uv pip install --python "${VENV_DIR}/bin/python" \
-    "flashinfer-python==${FLASHINFER_VERSION}" "flashinfer-cubin==${FLASHINFER_VERSION}"
-uv pip install --python "${VENV_DIR}/bin/python" \
-    "flashinfer-jit-cache==${FLASHINFER_VERSION}+cu128" \
-    --index-url https://flashinfer.ai/whl/cu128
+    "flashinfer-python==${FLASHINFER_VERSION}" --prerelease=allow
+# uv pip install --python "${VENV_DIR}/bin/python" \
+#     "flashinfer-jit-cache==${FLASHINFER_VERSION}+cu128" \
+#     --index-url https://flashinfer.ai/whl/cu128
 
 # ---------------
 # Miscellaneous
@@ -104,6 +120,36 @@ uv pip install --python "${VENV_DIR}/bin/python" \
     wandb \
     "packaging>=20.0" \
     tensorboard
+
+# ------
+# vLLM
+# ------
+echo ">>> Setting up vLLM for co-development..."
+mkdir -p "${THIRD_PARTY_DIR}"
+if [ ! -d "${VLLM_DIR}" ]; then
+    echo ">>> Cloning vLLM to ${VLLM_DIR}..."
+    git clone --branch "${VLLM_BRANCH}" "${VLLM_REPO}" "${VLLM_DIR}"
+else
+    echo ">>> vLLM already exists at ${VLLM_DIR}, skipping clone"
+fi
+
+echo ">>> Installing vLLM in editable mode..."
+export VLLM_USE_PRECOMPILED=1
+uv pip install --python "${VENV_DIR}/bin/python" -e "${VLLM_DIR}"
+
+# ----------------
+# ArcticInference
+# ----------------
+echo ">>> Setting up ArcticInference for co-development..."
+if [ ! -d "${ARCTIC_DIR}" ]; then
+    echo ">>> Cloning ArcticInference to ${ARCTIC_DIR}..."
+    git clone --branch "${ARCTIC_BRANCH}" "${ARCTIC_REPO}" "${ARCTIC_DIR}"
+else
+    echo ">>> ArcticInference already exists at ${ARCTIC_DIR}, skipping clone"
+fi
+
+echo ">>> Installing ArcticInference in editable mode..."
+uv pip install --python "${VENV_DIR}/bin/python" -e "${ARCTIC_DIR}"
 
 # ----------
 # Epilogue
