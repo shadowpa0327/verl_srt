@@ -148,8 +148,29 @@ from arctic_inference.suffix_decoding import ParallelSuffixDecodingCache
 cache = ParallelSuffixDecodingCache(
     max_tree_depth=64,      # Context window size
     num_threads=-1,         # -1=auto, 0=sequential, >0=specified
-    parallel_threshold=4    # Min batch for parallelization
+    parallel_threshold=4,   # Min batch for parallelization
+    hash_token_count=128    # Hash last N tokens for tree sharing (0=disabled)
 )
+```
+
+### Hash-Based Tree Sharing (NEW)
+
+Multiple requests with the same prompt share a single tree:
+
+```python
+# Same prompt → same tree
+prompt = np.array([1, 2, 3, 4, 5], dtype=np.int32)
+cache.start_request("req_1", prompt)
+cache.start_request("req_2", prompt)  # Shares tree with req_1
+
+# Each request gets unique seq_id (prevents token interleaving)
+# Tree only removed when last request stops
+```
+
+**Disable sharing:**
+```python
+cache = ParallelSuffixDecodingCache(hash_token_count=0)  # Per-cache
+cache.start_request("req", prompt, hash_token_count=0)   # Per-request
 ```
 
 ### Request Lifecycle
@@ -207,6 +228,7 @@ cache.batch_add_tokens(
 cache.max_tree_depth        # int - context window
 cache.num_threads           # int - actual thread count
 cache.parallel_threshold    # int - min batch for parallel
+cache.hash_token_count      # int - tokens hashed for sharing (0=disabled)
 cache.active_requests       # KeysView - active request IDs
 cache.num_active_requests   # int - count
 ```
@@ -259,6 +281,7 @@ loaded = load_suffix_tree("tree.snapshot")
 
 For the distributed architecture (per-question trees, micro-batch assignment, snapshot push/pull), see:
 - [Role of Third-Party Libraries - Integration Architecture](../role_of_third_party_lib.md#integration-architecture)
+- [Prompt Hash Tree Mapping](prompt_hash_tree_mapping.md) - Hash-based tree sharing implementation
 
 ### Key APIs for Distribution
 
@@ -266,8 +289,8 @@ For the distributed architecture (per-question trees, micro-batch assignment, sn
 |-----------|--------|-------------|
 | Serialize tree | `tree.create_snapshot()` | Returns bytes |
 | Restore tree | `SuffixTree.restore_snapshot(bytes)` | Returns new tree |
-| Serialize forest | `forest.create_snapshots()` | Returns list of (index, bytes) |
-| Restore forest | `SuffixForest.from_snapshots(...)` | Reconstructs forest |
+| Serialize forest | `cache.create_snapshot(include_hash_mapping=True)` | Returns (snapshots, hash_mapping) |
+| Restore forest | `cache.load_snapshot(snapshots, hash_to_tree=mapping)` | Reconstructs with hash lookup |
 
 ---
 
@@ -452,6 +475,8 @@ ArcticInference_srt/
 | Sequential calls in loops | Loses parallelism | Use `batch_speculate()` |
 | Wrong speculation mode | Performance/accuracy tradeoff | Path for speed, tree for accuracy |
 | num_threads=1 | No parallelism | Check OpenMP installation |
+| Token interleaving | Cross-contamination | Use hash-based sharing (default) |
+| Trees not reused after restore | Hash mapping not passed | Use `load_snapshot(snapshots, hash_to_tree=mapping)` |
 
 ---
 
