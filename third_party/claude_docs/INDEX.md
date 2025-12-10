@@ -11,6 +11,7 @@
 | Work with suffix tree cache | [ArcticInference Cache Skill](skills/arctic_inference_cache_managements.md) |
 | Measure acceptance lengths | [Acceptance Length Measurement Skill](skills/acceptance_length_measurement.md) |
 | Prompt hash tree mapping | [Prompt Hash Implementation Guide](skills/prompt_hash_tree_mapping.md) |
+| Load trees into vLLM | [vLLM Suffix Tree Integration](skills/vllm_suffix_tree_integration.md) |
 
 ---
 
@@ -26,7 +27,8 @@ third_party/
 |       +-- vLLM_v1_architecture.md       # vLLM quick reference
 |       +-- arctic_inference_cache_managements.md  # Cache quick reference
 |       +-- acceptance_length_measurement.md  # Metrics quick reference
-|       +-- prompt_hash_tree_mapping.md  # Design doc (TODO)
+|       +-- prompt_hash_tree_mapping.md  # Hash-based tree sharing
+|       +-- vllm_suffix_tree_integration.md  # Load trees into vLLM
 |
 +-- vllm/
 |   +-- VLLM_V1_ARCHITECTURE.md  # Full vLLM architecture docs
@@ -57,6 +59,7 @@ third_party/
 | **Cache Management Skill** | `skills/arctic_inference_cache_managements.md` | Quick-reference for suffix cache: request lifecycle, batch operations, serialization, threading |
 | **Acceptance Length Skill** | `skills/acceptance_length_measurement.md` | Quick-reference for measuring speculation quality: metrics extraction, formulas, Prometheus queries |
 | **Prompt Hash Implementation** | `skills/prompt_hash_tree_mapping.md` | Implementation guide for prompt hash → tree mapping, concurrent write protection |
+| **vLLM Suffix Integration** | `skills/vllm_suffix_tree_integration.md` | Load pre-built trees into vLLM, direct access API, BOS token gotcha |
 
 ### Technical References
 
