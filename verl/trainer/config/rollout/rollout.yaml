@@ -333,13 +333,18 @@ suffix_decoding:
   num_speculative_tokens: 5
 
   # Maximum tree depth for suffix decoding
-  max_tree_depth: 24
+  max_tree_depth: 64
 
   # Auto-manage server lifecycle (start/stop)
   auto_manage_server: true
 
   # Use server mode (suffix_remote) vs local mode (suffix with parallel decoding)
   # When true: uses suffix_remote method with gRPC server (client mode)
-  # When false: uses suffix method with local parallel decoding
+  # When false: uses local suffix method with trainer-managed SuffixTreeManager
   server_mode: true
+
+  # Hash-based tree sharing - number of trailing prompt tokens to hash
+  # Used in local mode (server_mode=false) for tree reuse across requests
+  # Set to 0 to disable hash-based sharing (one tree per request)
+  hash_token_count: 128
 

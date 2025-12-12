@@ -35,7 +35,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import asdict
 from types import MethodType
-from typing import Any, Dict, Generator, List
+from typing import Any, Dict, Generator, List, Tuple
 
 import cloudpickle as pickle
 import numpy as np
@@ -88,6 +88,7 @@ from verl.workers.rollout.vllm_rollout.utils import (
     VLLM_LORA_PATH,
     get_vllm_max_lora_rank,
 )
+from verl.workers.rollout.vllm_rollout.spec_decode_metrics import SpecDecodeMetricsTracker
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
@@ -301,6 +302,11 @@ class vLLMRollout(BaseRollout):
             **engine_kwargs,
         )
 
+        # Initialize spec decode metrics tracker for per-rollout stats
+        self.spec_decode_tracker = None
+        if suffix_enable and not config.disable_log_stats:
+            self.spec_decode_tracker = SpecDecodeMetricsTracker(self.inference_engine)
+
         kwargs = dict(
             n=1,
             #logprobs=0,  # can be set to 0 and let actor to recompute
@@ -361,6 +367,10 @@ class vLLMRollout(BaseRollout):
             responses:     |<- LLM generation ->|<- tool_calls ->|<- LLM generation ->|<- padding ->|
             response_mask: | 1, 1, 1, ..., 1, 1 | 0, 0, .., 0, 0 | 1, 1, 1, ..., 1, 1 | 0, 0, ..., 0|
         """
+        # Mark baseline for per-rollout spec decode metrics
+        if self.spec_decode_tracker is not None:
+            self.spec_decode_tracker.start_rollout()
+
         idx = prompts.batch["input_ids"]  # (bs, prompt_length)
         # left-padded attention_mask
         attention_mask = prompts.batch["attention_mask"]
@@ -453,61 +463,41 @@ class vLLMRollout(BaseRollout):
                             curr_log_prob.append(logprob[response_ids[i]].logprob)
                         rollout_log_probs.append(curr_log_prob)
 
-            # ---------------- NEW: stats logging (no prints, use logger) ----------------
-            # We try to pull vLLM runtime metrics; gracefully degrade if unsupported.
-            spec_metrics: Dict[str, Any] = {}
-            try:
-                # vLLM exposes this on the llm engine
-                metrics = self.inference_engine.llm_engine.get_metrics()
-            except AssertionError as e:
-                logger.info(f"Metrics are not supported in the V0 engine: {e}")
-            except Exception as e:
-                logger.warning(f"Fetching vLLM metrics failed: {e}")
-            else:
-                # Aggregate counters across workers
-                num_drafts = 0
-                num_draft_tokens = 0
-                num_accepted_tokens = 0
-                acceptance_counts: List[int] = []  # will grow to max vector length seen
-                for metric in metrics:
-                    name = getattr(metric, "name", None)
-                    # Counter-style metrics
-                    if name == "vllm:spec_decode_num_drafts":
-                        num_drafts += int(getattr(metric, "value", 0))
-                    elif name == "vllm:spec_decode_num_draft_tokens":
-                        num_draft_tokens += int(getattr(metric, "value", 0))
-                    elif name == "vllm:spec_decode_num_accepted_tokens":
-                        num_accepted_tokens += int(getattr(metric, "value", 0))
-                    # Vector-style metric (acceptance per token position)
-                    elif name == "vllm:spec_decode_num_accepted_tokens_per_pos":
-                        values = list(getattr(metric, "values", []))
-                        if values:
-                            # grow acceptance_counts to fit
-                            if len(values) > len(acceptance_counts):
-                                acceptance_counts.extend([0] * (len(values) - len(acceptance_counts)))
-                            for i, v in enumerate(values):
-                                acceptance_counts[i] += int(v)
+            # ---------------- Spec decode stats (per-rollout delta) ----------------
+            spec_decode_metrics = {}
+            if self.spec_decode_tracker is not None:
+                rollout_stats = self.spec_decode_tracker.end_rollout()
 
-                total_num_output_tokens = sum(len(r) for r in response)
-                acceptance_length = 1.0 + (num_accepted_tokens / num_drafts) if num_drafts > 0 else 1.0
+                if rollout_stats.num_drafts > 0:
+                    total_num_output_tokens = sum(len(r) for r in response)
+                    logger.info(
+                        "Rollout spec decode: total_output_tokens=%d, drafts=%d, draft_tokens=%d, "
+                        "accepted=%d, acceptance_rate=%.3f, mean_length=%.2f",
+                        total_num_output_tokens,
+                        rollout_stats.num_drafts,
+                        rollout_stats.num_draft_tokens,
+                        rollout_stats.num_accepted_tokens,
+                        rollout_stats.acceptance_rate,
+                        rollout_stats.mean_acceptance_length,
+                    )
 
-                # Log a compact summary
-                logger.info(
-                    "vLLM speculative decoding stats | total_output_tokens=%d num_drafts=%d "
-                    "num_draft_tokens=%d num_accepted_tokens=%d mean_acceptance_length=%.2f",
-                    total_num_output_tokens,
-                    num_drafts,
-                    num_draft_tokens,
-                    num_accepted_tokens,
-                    acceptance_length,
-                )
+                    # Per-position rates at debug level
+                    if rollout_stats.per_position_rates:
+                        rates_str = ", ".join(f"{r:.3f}" for r in rollout_stats.per_position_rates)
+                        logger.debug("Per-position acceptance rates: [%s]", rates_str)
 
-                # Log per-position acceptance rates (only if we have drafts)
-                if num_drafts > 0 and acceptance_counts:
-                    for i, cnt in enumerate(acceptance_counts):
-                        rate = cnt / num_drafts
-                        logger.debug("spec_decode acceptance_at_token_pos[%d]=%.6f", i, rate)
-            # ---------------- END NEW: stats logging ----------------
+                    # Capture metrics for wandb logging
+                    spec_decode_metrics = {
+                        "spec_decode/num_drafts": rollout_stats.num_drafts,
+                        "spec_decode/num_draft_tokens": rollout_stats.num_draft_tokens,
+                        "spec_decode/num_accepted_tokens": rollout_stats.num_accepted_tokens,
+                        "spec_decode/acceptance_rate": rollout_stats.acceptance_rate,
+                        "spec_decode/mean_acceptance_length": rollout_stats.mean_acceptance_length,
+                    }
+                    # Add per-position acceptance rates
+                    for i, rate in enumerate(rollout_stats.per_position_rates):
+                        spec_decode_metrics[f"spec_decode/acceptance_rate_pos_{i}"] = rate
+            # ---------------- End spec decode stats ----------------
 
             response = pad_2d_list_to_length(response, self.pad_token_id, max_length=self.config.response_length).to(
                 idx.device
@@ -552,7 +542,19 @@ class vLLMRollout(BaseRollout):
             # we will recompute old log prob with actor
             batch["rollout_log_probs"] = rollout_log_probs
 
-        return DataProto(batch=batch, non_tensor_batch=non_tensor_batch)
+        # Store the exact prompt tokens vLLM used for suffix tree hash matching
+        # This ensures trainer uses identical tokens for hash computation
+        non_tensor_batch["vllm_prompt_tokens"] = np.array(
+            [input_data["prompt_token_ids"] for input_data in vllm_inputs],
+            dtype=object,
+        )
+
+        # Build meta_info with spec decode metrics for wandb logging
+        meta_info = {}
+        if spec_decode_metrics:
+            meta_info["spec_decode_metrics"] = spec_decode_metrics
+
+        return DataProto(batch=batch, non_tensor_batch=non_tensor_batch, meta_info=meta_info)
 
     async def resume(self, tags: list[str]):
         """Resume rollout weights or kv cache in GPU memory.
@@ -601,6 +603,41 @@ class vLLMRollout(BaseRollout):
             model = self.inference_engine.llm_engine.model_executor.driver_worker.worker.model_runner.model
             patch_vllm_moe_model_weight_loader(model)
             model.load_weights(weights)
+
+    async def load_suffix_snapshot(
+        self,
+        snapshots: List[Tuple[int, bytes]],
+        hash_mapping: Dict[str, int],
+    ) -> None:
+        """
+        Load suffix tree snapshot for speculative decoding.
+
+        This method loads pre-built suffix trees into the vLLM drafter's
+        suffix cache. The trees are matched to new requests based on
+        prompt hash, enabling tree reuse across the training batch.
+
+        Args:
+            snapshots: List of (tree_idx, snapshot_bytes) tuples from
+                       ParallelSuffixDecodingCache.create_snapshot()
+            hash_mapping: Dict mapping prompt_hash -> tree_idx for tree reuse
+        """
+        if not snapshots:
+            logger.debug("load_suffix_snapshot called with empty snapshots, skipping")
+            return
+
+        # Use vLLM's load_snapshot API
+        if hasattr(self.inference_engine, "load_snapshot"):
+            self.inference_engine.load_snapshot(snapshots, hash_mapping)
+
+            total_bytes = sum(len(s[1]) for s in snapshots)
+            logger.info(
+                f"Loaded suffix tree snapshot: {len(snapshots)} trees, "
+                f"{total_bytes} bytes, {len(hash_mapping)} hash mappings"
+            )
+        else:
+            logger.warning(
+                "load_suffix_snapshot called but vLLM does not support load_snapshot API"
+            )
 
 
 # https://github.com/vllm-project/vllm/issues/13175
@@ -756,6 +793,42 @@ class vLLMAsyncRollout(BaseRollout):
             model = self.inference_engine.worker.model_runner.model
             patch_vllm_moe_model_weight_loader(model)
             model.load_weights(weights)
+
+    async def load_suffix_snapshot(
+        self,
+        snapshots: List[Tuple[int, bytes]],
+        hash_mapping: Dict[str, int],
+    ) -> None:
+        """
+        Load suffix tree snapshot for speculative decoding in async mode.
+
+        This method loads pre-built suffix trees into the vLLM drafter's
+        suffix cache. For async mode, we access the drafter through
+        worker.model_runner.drafter.
+
+        Args:
+            snapshots: List of (tree_idx, snapshot_bytes) tuples from
+                       ParallelSuffixDecodingCache.create_snapshot()
+            hash_mapping: Dict mapping prompt_hash -> tree_idx for tree reuse
+        """
+        if not snapshots:
+            logger.debug("load_suffix_snapshot called with empty snapshots, skipping")
+            return
+
+        # Access model runner through worker in async mode
+        model_runner = self.inference_engine.worker.model_runner
+        if hasattr(model_runner, "drafter") and hasattr(model_runner.drafter, "load_snapshot"):
+            model_runner.drafter.load_snapshot(snapshots, hash_mapping)
+
+            total_bytes = sum(len(s[1]) for s in snapshots)
+            logger.info(
+                f"Loaded suffix tree snapshot (async): {len(snapshots)} trees, "
+                f"{total_bytes} bytes, {len(hash_mapping)} hash mappings"
+            )
+        else:
+            logger.warning(
+                "load_suffix_snapshot called but drafter does not support load_snapshot API"
+            )
 
     def generate_sequences(self, prompts: DataProto) -> DataProto:
         """Batch generate sequences in sync mode."""

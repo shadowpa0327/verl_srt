@@ -111,17 +111,28 @@ class PrometheusConfig(BaseConfig):
 
 @dataclass
 class SuffixDecodingConfig(BaseConfig):
-    """Configuration for suffix remote speculative decoding"""
+    """Configuration for suffix speculative decoding.
+
+    Supports two modes:
+    - Server mode (server_mode=True): Uses gRPC server for suffix tree management
+    - Local mode (server_mode=False): Uses in-process ParallelSuffixDecodingCache
+      with snapshot-based tree sharing from trainer
+    """
 
     enable: bool = False
     server_host: str = "localhost"
     server_port: int = 50051
     num_speculative_tokens: int = 5
-    max_tree_depth: int = 24
+    max_tree_depth: int = 64  # Increased from 24 for better speculation
     # Auto-manage server lifecycle (start/stop)
     auto_manage_server: bool = True
     # Use server mode (suffix_remote) vs local mode (suffix with parallel decoding)
     server_mode: bool = True
+
+    # Hash-based tree sharing configuration (for local mode)
+    # Number of trailing prompt tokens to hash for tree lookup
+    # Set to 0 to disable hash-based sharing (one tree per request)
+    hash_token_count: int = 128
 
 
 @dataclass

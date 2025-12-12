@@ -56,6 +56,7 @@ from verl.trainer.ppo.metric_utils import (
     process_validation_metrics,
 )
 from verl.trainer.ppo.reward import compute_reward, compute_reward_async
+from verl.trainer.ppo.suffix_tree_manager import SuffixTreeManager, SuffixTreeManagerConfig
 from verl.trainer.ppo.utils import Role, WorkerType, need_critic, need_reference_policy, need_reward_model
 from verl.utils.checkpoint.checkpoint_manager import find_latest_ckpt_path, should_save_ckpt_esi
 from verl.utils.config import omega_conf_to_dataclass
@@ -350,6 +351,9 @@ class RayPPOTrainer:
         if self.config.algorithm.use_kl_in_reward:
             self.kl_ctrl_in_reward = core_algos.get_kl_controller(self.config.algorithm.kl_ctrl)
 
+        # Initialize suffix tree manager for speculative decoding
+        self.suffix_tree_manager = self._init_suffix_tree_manager()
+
         self._create_dataloader(train_dataset, val_dataset, collate_fn, train_sampler)
 
     def _create_dataloader(self, train_dataset, val_dataset, collate_fn, train_sampler: Optional[Sampler]):
@@ -433,6 +437,36 @@ class RayPPOTrainer:
                     self.config.critic.optim.total_training_steps = total_training_steps
         except Exception as e:
             print(f"Warning: Could not set total_training_steps in config. Structure missing? Error: {e}")
+
+    def _init_suffix_tree_manager(self) -> SuffixTreeManager:
+        """Initialize SuffixTreeManager for speculative decoding.
+
+        Extracts suffix decoding config from rollout config and creates
+        a SuffixTreeManager if enabled and using local mode (not server mode).
+        """
+        try:
+            suffix_config = self.config.actor_rollout_ref.rollout.suffix_decoding
+            # Only enable for local mode (not server mode)
+            enable = (
+                getattr(suffix_config, "enable", False)
+                and not getattr(suffix_config, "server_mode", True)
+            )
+            if enable:
+                manager_config = SuffixTreeManagerConfig(
+                    enable=True,
+                    max_tree_depth=getattr(suffix_config, "max_tree_depth", 64),
+                    hash_token_count=getattr(suffix_config, "hash_token_count", 128),
+                )
+                print(
+                    f"Initializing SuffixTreeManager with max_tree_depth={manager_config.max_tree_depth}, "
+                    f"hash_token_count={manager_config.hash_token_count}"
+                )
+                return SuffixTreeManager(manager_config, self.tokenizer)
+        except (AttributeError, ConfigAttributeError):
+            pass
+
+        # Return disabled manager if suffix decoding not configured or using server mode
+        return SuffixTreeManager(SuffixTreeManagerConfig(enable=False), self.tokenizer)
 
     def _dump_generations(self, inputs, outputs, gts, scores, reward_extra_infos_dict, dump_path):
         """Dump rollout/validation samples as JSONL."""
@@ -611,6 +645,10 @@ class RayPPOTrainer:
 
             test_batch = test_batch.union(test_output_gen_batch)
             test_batch.meta_info["validate"] = True
+
+            # Update suffix trees with validation Q/A patterns
+            if self.suffix_tree_manager.enabled:
+                self.suffix_tree_manager.update_from_rollout(test_batch)
 
             # evaluate using reward_function
             if self.val_reward_fn is None:
@@ -925,6 +963,11 @@ class RayPPOTrainer:
         dataloader_state_dict = self.train_dataloader.state_dict()
         torch.save(dataloader_state_dict, dataloader_local_path)
 
+        # save suffix tree state
+        if self.suffix_tree_manager.enabled:
+            suffix_tree_path = os.path.join(local_global_step_folder, "suffix_tree")
+            self.suffix_tree_manager.save(suffix_tree_path)
+
         # latest checkpointed iteration tracker (for atomic usage)
         local_latest_checkpointed_iteration = os.path.join(
             self.config.trainer.default_local_dir, "latest_checkpointed_iteration.txt"
@@ -991,6 +1034,15 @@ class RayPPOTrainer:
             self.train_dataloader.load_state_dict(dataloader_state_dict)
         else:
             print(f"Warning: No dataloader state found at {dataloader_local_path}, will start from scratch")
+
+        # load suffix tree state
+        if self.suffix_tree_manager.enabled:
+            suffix_tree_path = os.path.join(global_step_folder, "suffix_tree")
+            if os.path.exists(suffix_tree_path):
+                if self.suffix_tree_manager.load(suffix_tree_path):
+                    print(f"Loaded suffix tree state from {suffix_tree_path}")
+            else:
+                print(f"No suffix tree state found at {suffix_tree_path}, starting with empty trees")
 
     def _start_profiling(self, do_profile: bool) -> None:
         """Start profiling for all worker groups if profiling is enabled."""
@@ -1132,15 +1184,26 @@ class RayPPOTrainer:
 
                 is_last_step = self.global_steps >= self.total_training_steps
                 with marked_timer("step", timing_raw):
+                    # Push suffix tree snapshot to workers before rollout
+                    if self.suffix_tree_manager.enabled:
+                        with marked_timer("push_suffix_snapshot", timing_raw):
+                            snapshots, hash_mapping = self.suffix_tree_manager.get_snapshot()
+                            if snapshots and not self.async_rollout_mode:
+                                self.actor_rollout_wg.load_suffix_snapshot(snapshots, hash_mapping)
+
                     # generate a batch
                     with marked_timer("gen", timing_raw, color="red"):
                         if not self.async_rollout_mode:
                             gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch_output)
                         else:
                             gen_batch_output = self.async_rollout_manager.generate_sequences(gen_batch_output)
-
                         timing_raw.update(gen_batch_output.meta_info["timing"])
                         gen_batch_output.meta_info.pop("timing", None)
+
+                        # Extract spec decode metrics for wandb logging
+                        if "spec_decode_metrics" in gen_batch_output.meta_info:
+                            metrics.update(gen_batch_output.meta_info["spec_decode_metrics"])
+                            gen_batch_output.meta_info.pop("spec_decode_metrics", None)
 
                     if self.config.algorithm.adv_estimator == AdvantageEstimator.REMAX:
                         if self.reward_fn is None:
@@ -1173,6 +1236,12 @@ class RayPPOTrainer:
                     # repeat to align with repeated responses in rollout
                     batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
                     batch = batch.union(gen_batch_output)
+
+                    # Update suffix trees with rollout results
+                    if self.suffix_tree_manager.enabled:
+                        with marked_timer("update_suffix_tree", timing_raw):
+                            suffix_stats = self.suffix_tree_manager.update_from_rollout(batch)
+                            metrics.update(suffix_stats)
 
                     if "response_mask" not in batch.batch.keys():
                         batch.batch["response_mask"] = compute_response_mask(batch)

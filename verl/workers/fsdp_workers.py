@@ -953,6 +953,29 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         get_torch_device().empty_cache()
         return output
 
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def load_suffix_snapshot(
+        self,
+        snapshots: list[tuple[int, bytes]],
+        hash_mapping: dict[str, int],
+    ) -> None:
+        """
+        Load suffix tree snapshot into rollout engine for speculative decoding.
+
+        This method is called from the trainer before each rollout batch
+        to update the speculative decoding patterns.
+
+        Args:
+            snapshots: List of (tree_idx, snapshot_bytes) tuples from
+                       ParallelSuffixDecodingCache.create_snapshot()
+            hash_mapping: Dict mapping prompt_hash -> tree_idx for tree reuse
+        """
+        assert self._is_rollout, "load_suffix_snapshot requires rollout capability"
+
+        if hasattr(self.rollout, "load_suffix_snapshot"):
+            loop = get_event_loop()
+            loop.run_until_complete(self.rollout.load_suffix_snapshot(snapshots, hash_mapping))
+
     @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))
     @DistProfiler.annotate(color="blue", role="actor_compute_log_prob")
     def compute_log_prob(self, data: DataProto):
@@ -1941,6 +1964,22 @@ class AsyncActorRolloutRefWorker(ActorRolloutRefWorker):
     @register(dispatch_mode=Dispatch.DIRECT_ROLLOUT_METHOD)
     def get_zeromq_address(self):
         return self.rollout.get_zeromq_address()
+
+    @register(dispatch_mode=Dispatch.DIRECT_ROLLOUT_METHOD)
+    async def load_suffix_snapshot(
+        self,
+        snapshots: list[tuple[int, bytes]],
+        hash_mapping: dict[str, int],
+    ) -> None:
+        """
+        Load suffix tree snapshot into rollout engine for speculative decoding (async mode).
+
+        Args:
+            snapshots: List of (tree_idx, snapshot_bytes) tuples
+            hash_mapping: Dict mapping prompt_hash -> tree_idx
+        """
+        if hasattr(self.rollout, "load_suffix_snapshot"):
+            await self.rollout.load_suffix_snapshot(snapshots, hash_mapping)
 
     # ============================ SGLang related ============================
 

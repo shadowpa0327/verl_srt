@@ -92,7 +92,7 @@ def run_ppo(config, task_runner_class=None) -> None:
         )
         runner = task_runner_class.options(runtime_env={"nsight": nsight_options}).remote()
     else:
-        runner = task_runner_class.remote()
+        runner = task_runner_class.remote() 
     ray.get(runner.run.remote(config))
 
     # [Optional] get the path of the timeline trace file from the configuration, default to None
