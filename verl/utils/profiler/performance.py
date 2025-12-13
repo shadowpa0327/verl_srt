@@ -223,6 +223,56 @@ def reduce_timing(
     return timing_generate
 
 
+def reduce_spec_decode_metrics(
+    metrics: dict[str, float],
+) -> dict[str, float]:
+    """Reduce spec decode metrics across all processes.
+
+    Counts are summed, rates are recomputed from aggregated counts.
+    Unlike timing (which uses AVG), spec decode counts should be summed
+    and rates recomputed for statistical correctness.
+
+    Args:
+        metrics: Dictionary containing spec decode metrics with keys like
+            "spec_decode/num_drafts", "spec_decode/num_draft_tokens", etc.
+
+    Returns:
+        Dictionary with aggregated counts and recomputed rates.
+    """
+    if not dist.is_initialized():
+        return metrics
+
+    if not metrics:
+        return metrics
+
+    # Extract counts to sum
+    count_keys = ["num_drafts", "num_draft_tokens", "num_accepted_tokens"]
+    counts = torch.tensor(
+        [metrics.get(f"spec_decode/{k}", 0) for k in count_keys],
+        dtype=torch.float64,
+        device=get_device_id(),
+    )
+
+    # Sum counts across all ranks
+    dist.all_reduce(counts, op=dist.ReduceOp.SUM)
+
+    total_drafts = int(counts[0].item())
+    total_draft_tokens = int(counts[1].item())
+    total_accepted = int(counts[2].item())
+
+    # Recompute rates from aggregated counts
+    acceptance_rate = total_accepted / total_draft_tokens if total_draft_tokens > 0 else 0.0
+    mean_acceptance_length = 1.0 + (total_accepted / total_drafts) if total_drafts > 0 else 1.0
+
+    return {
+        "spec_decode/num_drafts": total_drafts,
+        "spec_decode/num_draft_tokens": total_draft_tokens,
+        "spec_decode/num_accepted_tokens": total_accepted,
+        "spec_decode/acceptance_rate": acceptance_rate,
+        "spec_decode/mean_acceptance_length": mean_acceptance_length,
+    }
+
+
 def topk_reduce_ratio_min_max(timing: float, k: int = 10) -> tuple[float, float, float]:
     """Calculate topk items take-up ratio, and min/max timing across all ranks."""
     if not dist.is_initialized():
