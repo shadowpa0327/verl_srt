@@ -151,6 +151,12 @@ fi
 echo ">>> Installing ArcticInference in editable mode..."
 uv pip install --python "${VENV_DIR}/bin/python" -e "${ARCTIC_DIR}"
 
+# ----------------
+# verl
+# ----------------
+echo ">>> Installing verl in editable mode..."
+uv pip install --python "${VENV_DIR}/bin/python" --no-deps -e .
+
 # ----------
 # Epilogue
 # ----------
