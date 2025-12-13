@@ -38,15 +38,22 @@ INSTRUCTIONS FOR CLAUDE:
 - Update this section as tasks progress
 - Mark completed tasks with [x]
 - Add new tasks as they emerge
-- Last updated: 2025-12-12
+- Last updated: 2025-12-13
 -->
 
 ### Active
 - [ ] Test suffix tree integration end-to-end with training run
+- [ ] Implement spec decode metrics aggregation across workers
+  - Add `reduce_spec_decode_metrics()` to `verl/utils/profiler/performance.py`
+  - Call in `fsdp_workers.py:generate_sequences()` after timing reduction
+  - Details: [`claude_docs/task_plans/spec_decode_metrics_aggregation.md`](claude_docs/task_plans/spec_decode_metrics_aggregation.md)
 - [ ] Implement age-based sequence eviction (preferred over tree-level LRU)
   - Track alive req_ids with `self._alive_requests: Dict[str, int]`
   - Periodically call `stop_request()` on old sequences
   - Details: [`claude_docs/future/suffix_tree_memory_optimizations.md`](claude_docs/future/suffix_tree_memory_optimizations.md)
+- [ ] Implement selective tree loading per worker (multi-GPU optimization)
+  - Each worker should only load trees for prompts it will process
+  - Details: [`claude_docs/task_plans/selective_tree_loading.md`](claude_docs/task_plans/selective_tree_loading.md) (to be created)
 - [ ] Add incremental snapshot transfer (only send changed trees)
 
 ### Completed
@@ -73,6 +80,7 @@ INSTRUCTIONS FOR CLAUDE:
 | Suffix tree integration | [`third_party/claude_docs/skills/vllm_suffix_tree_integration.md`](third_party/claude_docs/skills/vllm_suffix_tree_integration.md) |
 | Code review | [`claude_docs/task_plans/suffix_tree_code_review.md`](claude_docs/task_plans/suffix_tree_code_review.md) |
 | Memory optimizations | [`claude_docs/future/suffix_tree_memory_optimizations.md`](claude_docs/future/suffix_tree_memory_optimizations.md) |
+| Metrics aggregation | [`claude_docs/task_plans/spec_decode_metrics_aggregation.md`](claude_docs/task_plans/spec_decode_metrics_aggregation.md) |
 
 ## Key Directories
 ```
