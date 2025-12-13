@@ -5,8 +5,8 @@ set -x
 
 python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=grpo \
-    data.train_files=$HOME/data/gsm8k/train.parquet \
-    data.val_files=$HOME/data/gsm8k/test.parquet \
+    data.train_files=./data/gsm8k/train.parquet \
+    data.val_files=./data/gsm8k/test.parquet \
     data.train_batch_size=128 \
     data.max_prompt_length=512 \
     data.max_response_length=1024 \
@@ -36,7 +36,7 @@ python3 -m verl.trainer.main_ppo \
     trainer.logger='["console", "wandb"]' \
     trainer.project_name='verl_grpo_example_gsm8k' \
     trainer.experiment_name='qwen25_1.5b_function_rm' \
-    trainer.n_gpus_per_node=8 \
+    trainer.n_gpus_per_node=1 \
     trainer.nnodes=1 \
     trainer.save_freq=20 \
     trainer.test_freq=5 \
