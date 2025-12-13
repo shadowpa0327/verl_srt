@@ -34,5 +34,4 @@ outputs = llm.generate(
     SamplingParams(temperature=0.7, max_tokens=50),
 )
 
-breakpoint()
 print(outputs[0].outputs[0].text)
