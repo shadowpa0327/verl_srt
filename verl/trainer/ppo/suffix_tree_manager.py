@@ -187,6 +187,10 @@ class SuffixTreeManager:
 
         batch_size = len(response_ids)
 
+        # Get pre-computed prompt hashes from rollout worker (if available)
+        # These are computed from the exact tokens vLLM used, ensuring hash consistency
+        prompt_hashes = batch.non_tensor_batch.get("prompt_hashes")
+
         for i in range(batch_size):
             # Get prompt tokens - use vllm_prompt_tokens if available (exact match with vLLM)
             if use_vllm_prompt_tokens:
@@ -205,8 +209,11 @@ class SuffixTreeManager:
             # Convert to numpy array for cache
             prompt_array = np.array(prompt_tokens, dtype=np.int32)
 
+            # Use pre-computed hash if available (ensures consistency with vLLM)
+            pre_computed_hash = prompt_hashes[i] if prompt_hashes is not None else None
+
             # Start request (creates or reuses tree based on prompt hash)
-            self._cache.start_request(req_id, prompt_array)
+            self._cache.start_request(req_id, prompt_array, pre_computed_hash=pre_computed_hash)
 
             # Remove padding from response (right-padded typically)
             response_tokens = self._remove_right_padding(response_ids[i])

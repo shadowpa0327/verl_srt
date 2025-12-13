@@ -37,6 +37,8 @@ from dataclasses import asdict
 from types import MethodType
 from typing import Any, Dict, Generator, List, Tuple
 
+import copy
+
 import cloudpickle as pickle
 import numpy as np
 import ray
@@ -307,6 +309,16 @@ class vLLMRollout(BaseRollout):
         if suffix_enable and not config.disable_log_stats:
             self.spec_decode_tracker = SpecDecodeMetricsTracker(self.inference_engine)
 
+        # Store suffix decoding state for hash computation
+        self.suffix_decoding_enabled = suffix_enable
+        self._hash_token_count = 128  # Default
+        if suffix_enable:
+            # Get hash_token_count from config (default 128)
+            if isinstance(suffix_config, dict):
+                self._hash_token_count = suffix_config.get("hash_token_count", 128)
+            else:
+                self._hash_token_count = getattr(suffix_config, "hash_token_count", 128)
+
         kwargs = dict(
             n=1,
             #logprobs=0,  # can be set to 0 and let actor to recompute
@@ -439,11 +451,34 @@ class vLLMRollout(BaseRollout):
                     LoRARequest(lora_name=f"{lora_int_id}", lora_int_id=lora_int_id, lora_path="/simon-stub-path")
                 ] * batch_size
 
+        # Compute prompt hashes for suffix tree matching (if enabled)
+        # This ensures hash consistency between rollout, vLLM, and trainer
+        prompt_hashes = []
+        sampling_params_list = None
+        if self.suffix_decoding_enabled:
+            from arctic_inference.suffix_decoding import compute_prompt_hash
+
+            for input_data in vllm_inputs:
+                prompt_hash = compute_prompt_hash(
+                    input_data["prompt_token_ids"],
+                    self._hash_token_count,
+                )
+                prompt_hashes.append(prompt_hash)
+
+            # Create per-request SamplingParams with prompt_hash in extra_args
+            sampling_params_list = []
+            for prompt_hash in prompt_hashes:
+                params = copy.copy(self.sampling_params)
+                params.extra_args = {"prompt_hash": prompt_hash}
+                sampling_params_list.append(params)
+
         # users can customize different sampling_params at different run
         with self.update_sampling_params(**kwargs):
+            # Use per-request params if hashes computed, otherwise use shared params
+            effective_params = sampling_params_list if sampling_params_list else self.sampling_params
             outputs = self.inference_engine.generate(
                 prompts=vllm_inputs,  # because we have already convert it to prompt token id
-                sampling_params=self.sampling_params,
+                sampling_params=effective_params,
                 lora_request=lora_requests,
                 use_tqdm=False,
             )
@@ -548,6 +583,11 @@ class vLLMRollout(BaseRollout):
             [input_data["prompt_token_ids"] for input_data in vllm_inputs],
             dtype=object,
         )
+
+        # Store pre-computed prompt hashes for trainer to use in tree building
+        # This ensures hash consistency: rollout computes once, trainer reuses
+        if prompt_hashes:
+            non_tensor_batch["prompt_hashes"] = np.array(prompt_hashes, dtype=object)
 
         # Build meta_info with spec decode metrics for wandb logging
         meta_info = {}
