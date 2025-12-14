@@ -947,6 +947,15 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             }
         )
         output.meta_info["timing"] = timing_generate
+
+        # Reduce spec decode metrics across ranks (similar to timing)
+        if "spec_decode_metrics" in output.meta_info:
+            from verl.utils.profiler.performance import reduce_spec_decode_metrics
+
+            output.meta_info["spec_decode_metrics"] = reduce_spec_decode_metrics(
+                output.meta_info["spec_decode_metrics"]
+            )
+
         output = output.to("cpu")
 
         # clear kv cache

@@ -521,7 +521,7 @@ class vLLMRollout(BaseRollout):
                         rates_str = ", ".join(f"{r:.3f}" for r in rollout_stats.per_position_rates)
                         logger.debug("Per-position acceptance rates: [%s]", rates_str)
 
-                    # Capture metrics for wandb logging
+                    # Capture metrics for wandb logging (counts will be aggregated across ranks)
                     spec_decode_metrics = {
                         "spec_decode/num_drafts": rollout_stats.num_drafts,
                         "spec_decode/num_draft_tokens": rollout_stats.num_draft_tokens,
@@ -529,9 +529,6 @@ class vLLMRollout(BaseRollout):
                         "spec_decode/acceptance_rate": rollout_stats.acceptance_rate,
                         "spec_decode/mean_acceptance_length": rollout_stats.mean_acceptance_length,
                     }
-                    # Add per-position acceptance rates
-                    for i, rate in enumerate(rollout_stats.per_position_rates):
-                        spec_decode_metrics[f"spec_decode/acceptance_rate_pos_{i}"] = rate
             # ---------------- End spec decode stats ----------------
 
             response = pad_2d_list_to_length(response, self.pad_token_id, max_length=self.config.response_length).to(
