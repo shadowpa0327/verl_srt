@@ -1,7 +1,6 @@
 #!/bin/bash
 # Install verl dependencies without installing the verl package itself
 # Equivalent to the Dockerfile but as a standalone bash script
-# Skips: vLLM, ArcticInference, Apex, Megatron
 # Uses uv for venv creation and package installation
 
 set -e  # Exit on error
@@ -21,14 +20,10 @@ VENV_DIR="${VENV_DIR:-.venv}"
 # Third-party dependencies directory
 THIRD_PARTY_DIR="${VERL_ROOT}/third_party"
 
-# vLLM - cloned under third_party for co-development
-VLLM_REPO="https://github.com/shadowpa0327/vllm.git"
-VLLM_BRANCH="suffix_decode"
+# vLLM - git submodule under third_party
 VLLM_DIR="${THIRD_PARTY_DIR}/vllm"
 
-# ArcticInference - cloned under third_party for co-development
-ARCTIC_REPO="https://github.com/shadowpa0327/ArcticInference_srt.git"
-ARCTIC_BRANCH="dev/grpc_server"
+# ArcticInference - git submodule under third_party
 ARCTIC_DIR="${THIRD_PARTY_DIR}/ArcticInference_srt"
 
 # Proxy settings (set these if needed)
@@ -85,9 +80,6 @@ uv pip install --python "${VENV_DIR}/bin/python" "${URL}"
 echo ">>> Installing FlashInfer ${FLASHINFER_VERSION}..."
 uv pip install --python "${VENV_DIR}/bin/python" \
     "flashinfer-python==${FLASHINFER_VERSION}" --prerelease=allow
-# uv pip install --python "${VENV_DIR}/bin/python" \
-#     "flashinfer-jit-cache==${FLASHINFER_VERSION}+cu128" \
-#     --index-url https://flashinfer.ai/whl/cu128
 
 # ---------------
 # Miscellaneous
@@ -126,12 +118,13 @@ uv pip install --python "${VENV_DIR}/bin/python" \
 # ------
 echo ">>> Setting up vLLM for co-development..."
 mkdir -p "${THIRD_PARTY_DIR}"
-if [ ! -d "${VLLM_DIR}" ]; then
-    echo ">>> Cloning vLLM to ${VLLM_DIR}..."
-    git clone --branch "${VLLM_BRANCH}" "${VLLM_REPO}" "${VLLM_DIR}"
-else
-    echo ">>> vLLM already exists at ${VLLM_DIR}, skipping clone"
+echo ">>> Checking vLLM submodule..."
+if [ ! -d "${VLLM_DIR}" ] || [ -z "$(ls -A "${VLLM_DIR}")" ]; then
+    echo "Error: vLLM submodule not found or empty at ${VLLM_DIR}"
+    echo "Please run: git submodule update --init --recursive"
+    exit 1
 fi
+echo ">>> vLLM found at ${VLLM_DIR}"
 
 echo ">>> Installing vLLM in editable mode..."
 export VLLM_USE_PRECOMPILED=1
@@ -140,13 +133,13 @@ uv pip install --python "${VENV_DIR}/bin/python" -e "${VLLM_DIR}"
 # ----------------
 # ArcticInference
 # ----------------
-echo ">>> Setting up ArcticInference for co-development..."
-if [ ! -d "${ARCTIC_DIR}" ]; then
-    echo ">>> Cloning ArcticInference to ${ARCTIC_DIR}..."
-    git clone --branch "${ARCTIC_BRANCH}" "${ARCTIC_REPO}" "${ARCTIC_DIR}"
-else
-    echo ">>> ArcticInference already exists at ${ARCTIC_DIR}, skipping clone"
+echo ">>> Checking ArcticInference submodule..."
+if [ ! -d "${ARCTIC_DIR}" ] || [ -z "$(ls -A "${ARCTIC_DIR}")" ]; then
+    echo "Error: ArcticInference submodule not found or empty at ${ARCTIC_DIR}"
+    echo "Please run: git submodule update --init --recursive"
+    exit 1
 fi
+echo ">>> ArcticInference found at ${ARCTIC_DIR}"
 
 echo ">>> Installing ArcticInference in editable mode..."
 uv pip install --python "${VENV_DIR}/bin/python" -e "${ARCTIC_DIR}"
