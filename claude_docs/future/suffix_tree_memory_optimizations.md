@@ -1,7 +1,7 @@
 # Suffix Tree Memory Optimizations
 
-**Date**: 2025-12-12
-**Status**: Analysis Complete, Implementation Pending
+**Date**: 2025-12-14 (Updated)
+**Status**: Analysis Complete, Ready for Implementation
 **Priority**: High (Memory), Medium (Performance)
 
 ## Overview
@@ -68,19 +68,31 @@ class SuffixTreeManagerConfig:
     min_sequences_per_tree: int = 10      # Keep at least N sequences per tree
 ```
 
-#### Implementation Consideration: Tracking Alive Requests
+#### Implementation: Leveraging Existing ArcticInference Tracking
 
-**Current problem**: We call `start_request(req_id)` but never `stop_request(req_id)`, and we don't track which `req_id`s exist. To evict old sequences, we need to track them.
+**Good news**: `ParallelSuffixDecodingCache` already tracks everything we need!
 
-##### Option 1: Simple Global Tracking (Recommended)
+Looking at [parallel_cache.py](../../third_party/ArcticInference_srt/arctic_inference/suffix_decoding/parallel_cache.py):
+- `self._req_to_tree_idx: Dict[Hashable, int]` - Maps req_id → tree_idx (line 76)
+- `self._hash_to_tree_idx: Dict[str, int]` - Maps prompt_hash → tree_idx (line 79)
+- `active_requests` property - Returns all active request IDs (line 106-113)
+
+This means we can:
+1. Get all active req_ids via `cache.active_requests`
+2. Get tree index for any req_id via `cache._req_to_tree_idx[req_id]`
+3. Get tree for any prompt hash via `cache._hash_to_tree_idx[prompt_hash]`
+
+**The only missing piece**: We need to track **when** each req_id was added (batch number). This is a simple addition to `SuffixTreeManager`.
+
+##### Implementation (Simple - Just Add Age Tracking)
 
 ```python
 class SuffixTreeManager:
     def __init__(self, config, tokenizer):
         # ... existing init ...
 
-        # Track alive requests: req_id -> batch_number_when_added
-        self._alive_requests: Dict[str, int] = {}
+        # Track when each request was added: req_id -> batch_number
+        self._request_batch: Dict[str, int] = {}
 
     def update_from_rollout(self, batch) -> Dict[str, Any]:
         # ... existing code ...
@@ -91,7 +103,7 @@ class SuffixTreeManager:
             self._cache.add_tokens(req_id, response_array)
 
             # Track when this request was added
-            self._alive_requests[req_id] = self._batch_counter
+            self._request_batch[req_id] = self._batch_counter
 
         # Periodic pruning
         if self._batch_counter % self.config.prune_interval_batches == 0:
@@ -102,121 +114,80 @@ class SuffixTreeManager:
 
     def _prune_old_sequences(self) -> Dict[str, Any]:
         """Remove sequences older than max_age_batches."""
-        total_pruned = 0
         cutoff_batch = self._batch_counter - self.config.sequence_max_age_batches
 
+        # Get all active requests from cache (already tracked by ArcticInference)
+        active_requests = set(self._cache.active_requests)
+
+        # Find old requests to evict
         to_evict = [
-            req_id for req_id, batch_added in self._alive_requests.items()
-            if batch_added < cutoff_batch
+            req_id for req_id in active_requests
+            if self._request_batch.get(req_id, 0) < cutoff_batch
         ]
 
+        # Optional: enforce min_sequences_per_tree using ArcticInference's tracking
+        if self.config.min_sequences_per_tree > 0:
+            to_evict = self._filter_respecting_min_per_tree(to_evict)
+
+        total_pruned = 0
         for req_id in to_evict:
             try:
-                self._cache.stop_request(req_id)  # Removes sequence from tree
-                del self._alive_requests[req_id]
+                self._cache.stop_request(req_id)  # ArcticInference handles tree cleanup
+                self._request_batch.pop(req_id, None)
                 total_pruned += 1
             except Exception as e:
                 logger.debug(f"Failed to prune {req_id}: {e}")
 
-        logger.info(
-            f"Pruned {total_pruned} old sequences "
-            f"(older than {self.config.sequence_max_age_batches} batches)"
-        )
-
         return {
             "suffix_tree/sequences_pruned": total_pruned,
-            "suffix_tree/prune_cutoff_batch": cutoff_batch,
-            "suffix_tree/alive_requests": len(self._alive_requests),
+            "suffix_tree/alive_requests": len(active_requests) - total_pruned,
         }
+
+    def _filter_respecting_min_per_tree(self, to_evict: List[str]) -> List[str]:
+        """Filter eviction list to respect min_sequences_per_tree."""
+        # Use ArcticInference's public API to count requests per tree
+        tree_request_count = self._cache.get_requests_per_tree()
+
+        # Only evict if tree will still have enough sequences
+        filtered = []
+        for req_id in to_evict:
+            tree_idx = self._cache.get_tree_idx_for_request(req_id)
+            if tree_idx is not None:
+                count = tree_request_count.get(tree_idx, 0)
+                if count > self.config.min_sequences_per_tree:
+                    filtered.append(req_id)
+                    tree_request_count[tree_idx] = count - 1
+
+        return filtered
 ```
 
 **Pros**:
-- Simple, low overhead (~100 bytes per req_id)
-- No ArcticInference API changes needed
-- `stop_request()` already removes sequence from correct tree
-
-**Cons**:
-- Can't enforce `min_sequences_per_tree` (don't know tree association)
+- Leverages existing ArcticInference tracking (no changes needed there)
+- Full tree association available via `cache._req_to_tree_idx`
+- Can enforce `min_sequences_per_tree` using existing data
+- Low overhead (~100 bytes per req_id for age tracking)
 
 **Memory overhead**: ~10MB for 100K sequences (negligible)
 
-##### Option 2: Track with Tree Association (Future Enhancement)
+##### ArcticInference Public API (Added)
 
-If we need per-tree minimum sequences, we need to know which tree each req_id belongs to:
-
-```python
-class SuffixTreeManager:
-    def __init__(self, ...):
-        # req_id -> (prompt_hash, batch_added)
-        self._alive_requests: Dict[str, Tuple[str, int]] = {}
-
-        # prompt_hash -> set of req_ids (for per-tree counting)
-        self._requests_by_hash: Dict[str, Set[str]] = defaultdict(set)
-
-    def update_from_rollout(self, batch):
-        for i in range(batch_size):
-            req_id = f"train_{self._batch_counter}_{i}"
-
-            # Need to compute or retrieve prompt hash
-            prompt_hash = self._compute_prompt_hash(prompt_tokens)
-            # OR: prompt_hash = self._cache.get_hash_for_request(req_id)  # New API needed
-
-            self._alive_requests[req_id] = (prompt_hash, self._batch_counter)
-            self._requests_by_hash[prompt_hash].add(req_id)
-
-    def _prune_old_sequences(self):
-        for prompt_hash, req_ids in self._requests_by_hash.items():
-            # Can now enforce min_sequences_per_tree
-            if len(req_ids) <= self.config.min_sequences_per_tree:
-                continue  # Don't prune below minimum
-
-            # Evict oldest in this tree
-            ...
-```
-
-**Requirements for Option 2**:
-- Either compute prompt hash in Python (need to match ArcticInference's hash function)
-- Or add `get_hash_for_request(req_id)` API to ArcticInference
-
-##### Option 3: Approximate Global Minimum (Middle Ground)
+The following public methods have been added to `ParallelSuffixDecodingCache` for cleaner access:
 
 ```python
-def _prune_old_sequences(self):
-    num_trees = self._cache.get_stats().get("num_trees_in_forest", 0)
+# In ParallelSuffixDecodingCache (ArcticInference) - NOW AVAILABLE
+def get_tree_idx_for_request(self, req_id: Hashable) -> Optional[int]:
+    """Get the tree index for a request, or None if not active."""
+    return self._req_to_tree_idx.get(req_id)
 
-    # Keep at least min_sequences_per_tree * num_trees globally
-    min_total = self.config.min_sequences_per_tree * num_trees
-
-    if len(self._alive_requests) <= min_total:
-        return {}  # Don't prune below global minimum
-
-    # Sort by age, evict oldest while respecting minimum
-    sorted_requests = sorted(
-        self._alive_requests.items(),
-        key=lambda x: x[1]  # Sort by batch (oldest first)
-    )
-
-    cutoff = self._batch_counter - self.config.sequence_max_age_batches
-    num_can_evict = len(sorted_requests) - min_total
-
-    pruned = 0
-    for req_id, batch_added in sorted_requests:
-        if pruned >= num_can_evict:
-            break
-        if batch_added < cutoff:
-            self._cache.stop_request(req_id)
-            del self._alive_requests[req_id]
-            pruned += 1
-
-    return {"suffix_tree/sequences_pruned": pruned}
+def get_requests_per_tree(self) -> Dict[int, int]:
+    """Get count of active requests per tree index."""
+    counts: Dict[int, int] = {}
+    for tree_idx in self._req_to_tree_idx.values():
+        counts[tree_idx] = counts.get(tree_idx, 0) + 1
+    return counts
 ```
 
-##### Recommendation
-
-**Start with Option 1** (simple global tracking):
-1. Achieves the main goal (age-based eviction)
-2. No API changes needed
-3. Can upgrade to Option 2/3 later if per-tree control is needed
+These methods enable the `SuffixTreeManager` to access tree associations without accessing private attributes.
 
 #### Why Age-Based is Best for RL
 
@@ -349,7 +320,7 @@ with marked_timer("push_suffix_snapshot", timing_raw):
 
 **Proposed Solutions**:
 
-#### Option A: Incremental Snapshots (Recommended)
+#### Option A: Incremental Snapshots (USER (chi-chih chang): I don't like this option)
 Only send trees that changed since last snapshot:
 
 ```python
@@ -382,7 +353,7 @@ class SuffixTreeManager:
         return snapshots, hash_mapping
 ```
 
-#### Option B: Shared Memory
+#### Option B: Shared Memory (USER (chi-chih chang): I don't like this option)
 Use Ray's shared memory for large objects:
 
 ```python
@@ -431,41 +402,18 @@ self._cache.start_request(req_id, prompt_array)
 ```
 
 **Impact**:
-- Request metadata accumulates in cache
+- Request metadata accumulates in cache (`_req_to_tree_idx`, `_req_to_seq_id`)
 - Memory grows with total requests processed
 - May slow down cache operations
 
-**Proposed Solution**: Periodic cleanup
+**Solution**: This is **automatically solved by age-based sequence eviction** (Concern 1).
 
-```python
-class SuffixTreeManager:
-    def __init__(self, ...):
-        self._active_requests: Set[str] = set()
-        self._cleanup_interval: int = 100  # Clean every N batches
+When `stop_request(req_id)` is called during pruning:
+1. ArcticInference removes from `_req_to_tree_idx` and `_req_to_seq_id`
+2. If no other requests reference the tree, the tree is removed (unless protected)
+3. Hash mapping is cleaned up
 
-    def update_from_rollout(self, batch):
-        # ... existing code ...
-        self._active_requests.add(req_id)
-
-        # Periodic cleanup
-        if self._batch_counter % self._cleanup_interval == 0:
-            self._cleanup_old_requests()
-
-    def _cleanup_old_requests(self):
-        """Stop old requests to free metadata."""
-        # Keep only requests from last N batches
-        cutoff_batch = self._batch_counter - self._cleanup_interval
-        old_requests = [
-            r for r in self._active_requests
-            if self._get_batch_from_req_id(r) < cutoff_batch
-        ]
-        for req_id in old_requests:
-            try:
-                self._cache.stop_request(req_id)
-            except Exception:
-                pass  # Request may already be stopped
-            self._active_requests.discard(req_id)
-```
+No additional implementation needed beyond what's in Concern 1.
 
 ---
 
@@ -571,20 +519,21 @@ class SuffixTreeManager:
 
 | Optimization | Memory Impact | Performance Impact | Effort | Priority |
 |--------------|--------------|-------------------|--------|----------|
-| Age-based sequence eviction | **High** | Low | Medium | **P0** |
-| Incremental snapshots | Medium | High | Medium | **P1** |
-| Compressed snapshots | Medium | Medium | Easy | **P2** |
-| Async loading | Low | High | Medium | **P2** |
-| Tree-level LRU (fallback) | High | Low | Easy | **P3** |
-| Lazy metrics | Low | Low | Easy | **P3** |
-| Reduce per-pos metrics | Low | Low | Easy | **P3** |
+| Age-based sequence eviction | **High** | Low | **Easy** | **P0** |
+| Compressed snapshots | Medium | Medium | Easy | P1 |
+| Async loading | Low | High | Medium | P2 |
+| Tree-level LRU (fallback) | High | Low | Easy | P3 |
+| Lazy metrics | Low | Low | Easy | P3 |
+| Reduce per-pos metrics | Low | Low | Easy | P3 |
 
-### Why Age-Based Eviction is P0
+### Why Age-Based Eviction is P0 and Easy
 
 1. **RL-specific**: Old sequences from previous policy versions hurt speculation accuracy
 2. **Memory bounded**: Naturally limits growth based on training window
 3. **Uses existing API**: `stop_request()` already removes sequences from trees
-4. **No ArcticInference changes**: Works with current `ParallelSuffixDecodingCache`
+4. **Leverages existing tracking**: ArcticInference already tracks `req_id → tree_idx`
+5. **Minimal code changes**: Only need to add `_request_batch` dict in `SuffixTreeManager`
+6. **No ArcticInference changes required**: All necessary APIs already exist
 
 ---
 

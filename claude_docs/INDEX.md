@@ -5,15 +5,21 @@
 | Document | Description |
 |----------|-------------|
 | [Architecture](architecture.md) | Core components, design patterns, training flow |
-| [Suffix Tree Speculation](suffix_tree_speculation.md) | vLLM speculation integration for faster inference |
+| [Suffix Tree Speculation](suffix_tree_speculation.md) | vLLM speculation integration overview |
 
-## Task Plans
+## Skills (Implemented, Reusable)
 
 | Document | Description |
 |----------|-------------|
-| [Suffix Tree VERL Integration](task_plans/suffix_tree_verl_integration.md) | Integration plan for SuffixTreeManager in trainer |
-| [Suffix Tree Code Review](task_plans/suffix_tree_code_review.md) | Code quality analysis and recommendations |
-| [Precomputed Hash Suffix Tree](task_plans/precomputed_hash_suffix_tree.md) | Hash-based tree mapping implementation |
+| [Suffix Tree VERL Integration](skills/suffix_tree_verl_integration.md) | How SuffixTreeManager integrates with trainer |
+| [Selective Snapshot Distribution](skills/selective_snapshot_distribution.md) | Batch-specific tree transfer optimization |
+
+## Task Plans (Pending/In-Progress)
+
+| Document | Status | Description |
+|----------|--------|-------------|
+| [Per-Worker Snapshot Analysis](task_plans/per_worker_snapshot_analysis.md) | Analysis | gRPC-based per-worker tree distribution |
+| [Spec Decode Metrics Aggregation](task_plans/spec_decode_metrics_aggregation.md) | Ready | Multi-GPU metrics reduction |
 
 ## Future Enhancements
 
@@ -39,3 +45,4 @@ Detailed documentation for third-party integrations is in [`third_party/claude_d
 | Modify training loop | `verl/trainer/ppo/ray_trainer.py` |
 | Add new algorithm | `verl/trainer/ppo/core_algos.py` |
 | Configure training | `verl/trainer/config/` |
+| SuffixTreeManager | `verl/trainer/ppo/suffix_tree_manager.py` |

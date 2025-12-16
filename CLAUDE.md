@@ -38,49 +38,36 @@ INSTRUCTIONS FOR CLAUDE:
 - Update this section as tasks progress
 - Mark completed tasks with [x]
 - Add new tasks as they emerge
-- Last updated: 2025-12-13
+- Last updated: 2025-12-16
 -->
 
 ### Active
 - [ ] Test suffix tree integration end-to-end with training run
 - [ ] Implement spec decode metrics aggregation across workers
-  - Add `reduce_spec_decode_metrics()` to `verl/utils/profiler/performance.py`
-  - Call in `fsdp_workers.py:generate_sequences()` after timing reduction
   - Details: [`claude_docs/task_plans/spec_decode_metrics_aggregation.md`](claude_docs/task_plans/spec_decode_metrics_aggregation.md)
-- [ ] Implement age-based sequence eviction (preferred over tree-level LRU)
-  - Track alive req_ids with `self._alive_requests: Dict[str, int]`
-  - Periodically call `stop_request()` on old sequences
-  - Details: [`claude_docs/future/suffix_tree_memory_optimizations.md`](claude_docs/future/suffix_tree_memory_optimizations.md)
-- [ ] Implement selective tree loading per worker (multi-GPU optimization)
-  - Each worker should only load trees for prompts it will process
-  - Details: [`claude_docs/task_plans/selective_tree_loading.md`](claude_docs/task_plans/selective_tree_loading.md) (to be created)
-- [ ] Add incremental snapshot transfer (only send changed trees)
+- [ ] Implement per-worker snapshot distribution (gRPC)
+  - Analysis: [`claude_docs/task_plans/per_worker_snapshot_analysis.md`](claude_docs/task_plans/per_worker_snapshot_analysis.md)
 
 ### Completed
-- [x] Integrate suffix tree speculation into verl rollout worker
-  - Created `verl/trainer/ppo/suffix_tree_manager.py` (SuffixTreeManager class)
-  - Updated `verl/trainer/ppo/ray_trainer.py` (training loop integration)
-  - Updated `verl/workers/rollout/vllm_rollout/vllm_rollout_spmd.py` (load_suffix_snapshot)
-  - Updated `verl/workers/fsdp_workers.py` (worker dispatch)
-  - Details: [`claude_docs/task_plans/suffix_tree_verl_integration.md`](claude_docs/task_plans/suffix_tree_verl_integration.md)
-- [x] Implement hash-based tree mapping in ArcticInference
-- [x] Add direct access `llm.load_snapshot()` API to vLLM
-- [x] Remove legacy RPC chain and global tree mode from vLLM
-- [x] Fix seq_id initialization and add protected tree indices
-- [x] Add per-rollout spec decode metrics with delta calculation
-  - Created `verl/workers/rollout/vllm_rollout/spec_decode_metrics.py`
-  - Added wandb logging for acceptance rate metrics
-- [x] Code review of suffix tree integration
-  - Details: [`claude_docs/task_plans/suffix_tree_code_review.md`](claude_docs/task_plans/suffix_tree_code_review.md)
-  - Memory analysis: [`claude_docs/future/suffix_tree_memory_optimizations.md`](claude_docs/future/suffix_tree_memory_optimizations.md)
+- [x] Selective suffix-tree snapshot distribution
+- [x] Suffix tree VERL integration
+- [x] Hash-based tree mapping in ArcticInference
+- [x] Direct access `llm.load_snapshot()` API in vLLM
+- [x] Per-rollout spec decode metrics
 
-### References
-| Task | Details |
-|------|---------|
-| Suffix tree integration | [`third_party/claude_docs/skills/vllm_suffix_tree_integration.md`](third_party/claude_docs/skills/vllm_suffix_tree_integration.md) |
-| Code review | [`claude_docs/task_plans/suffix_tree_code_review.md`](claude_docs/task_plans/suffix_tree_code_review.md) |
+### Skills (Implemented Reference)
+
+| Skill | Description |
+|-------|-------------|
+| [Suffix Tree VERL Integration](claude_docs/skills/suffix_tree_verl_integration.md) | SuffixTreeManager integration with trainer |
+| [Selective Snapshot Distribution](claude_docs/skills/selective_snapshot_distribution.md) | Batch-specific tree transfer |
+
+### Future
+
+| Enhancement | Details |
+|-------------|---------|
 | Memory optimizations | [`claude_docs/future/suffix_tree_memory_optimizations.md`](claude_docs/future/suffix_tree_memory_optimizations.md) |
-| Metrics aggregation | [`claude_docs/task_plans/spec_decode_metrics_aggregation.md`](claude_docs/task_plans/spec_decode_metrics_aggregation.md) |
+| Async update options | [`claude_docs/future/suffix_tree_async_options.md`](claude_docs/future/suffix_tree_async_options.md) |
 
 ## Key Directories
 ```
