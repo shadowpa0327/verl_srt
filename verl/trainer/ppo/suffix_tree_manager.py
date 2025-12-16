@@ -243,6 +243,17 @@ class SuffixTreeManager:
             # get_stats may not be available in all versions
             pass
 
+        # Add memory estimation metrics
+        try:
+            memory_stats = self._cache.get_memory_stats()
+            total_bytes = memory_stats.get("total_bytes", 0)
+            stats["suffix_tree/memory_bytes"] = total_bytes
+            stats["suffix_tree/memory_mb"] = total_bytes / (1024 * 1024)
+            stats["suffix_tree/avg_bytes_per_tree"] = memory_stats.get("avg_bytes_per_tree", 0)
+        except Exception:
+            # get_memory_stats may not be available in all versions
+            pass
+
         logger.debug(
             f"Suffix tree update: processed {stats['suffix_tree/prompts_processed']} prompts, "
             f"added {stats['suffix_tree/tokens_added']} tokens"
@@ -299,12 +310,117 @@ class SuffixTreeManager:
             logger.error(f"Failed to create snapshot: {e}")
             return [], {}
 
+    def extract_batch_hashes(
+        self,
+        input_ids: np.ndarray,
+        attention_mask: np.ndarray,
+    ) -> List[str]:
+        """
+        Extract prompt hashes from a batch of input_ids.
+
+        This computes hashes for each prompt in the batch, handling padding
+        via the attention mask. Used to determine which trees to include
+        in selective snapshots.
+
+        Args:
+            input_ids: Batch of token IDs, shape (batch_size, seq_len)
+            attention_mask: Attention mask, shape (batch_size, seq_len)
+                           1 for valid tokens, 0 for padding
+
+        Returns:
+            List of unique prompt hashes from the batch (deduplicated)
+        """
+        if not self.enabled:
+            return []
+
+        batch_size = len(input_ids)
+        seen_hashes = set()
+        unique_hashes = []
+
+        for i in range(batch_size):
+            # Extract actual tokens using attention mask
+            mask = attention_mask[i]
+            valid_indices = np.where(mask == 1)[0]
+            if len(valid_indices) == 0:
+                continue
+
+            tokens = input_ids[i][valid_indices]
+
+            # Compute hash using the cache's hash function
+            prompt_hash = self._cache._hash_prompt(tokens)
+
+            if prompt_hash not in seen_hashes:
+                seen_hashes.add(prompt_hash)
+                unique_hashes.append(prompt_hash)
+
+        return unique_hashes
+
+    def get_selective_snapshot(
+        self,
+        hashes: List[str],
+    ) -> Tuple[List[Tuple[int, bytes]], Dict[str, int]]:
+        """
+        Get snapshots for specific prompt hashes only.
+
+        This is more efficient than get_snapshot() when only a subset of trees
+        is needed for a particular batch. Workers only receive trees for the
+        prompts they will process.
+
+        Args:
+            hashes: Prompt hashes needed for this batch (from DataProto.non_tensor_batch["prompt_hashes"])
+
+        Returns:
+            Tuple of:
+                - snapshots: List of (tree_idx, snapshot_bytes) for requested trees only
+                - hash_mapping: Dict mapping prompt_hash -> tree_idx for requested hashes
+        """
+        if not self.enabled:
+            return [], {}
+
+        if not hashes:
+            logger.warning("get_selective_snapshot called with empty hashes list")
+            return [], {}
+
+        try:
+            # Map hashes to tree indices
+            cache_hash_to_tree = self._cache._hash_to_tree_idx
+            tree_indices = []
+            hash_mapping: Dict[str, int] = {}
+
+            for prompt_hash in hashes:
+                if prompt_hash in cache_hash_to_tree:
+                    tree_idx = cache_hash_to_tree[prompt_hash]
+                    if tree_idx not in tree_indices:  # Dedupe
+                        tree_indices.append(tree_idx)
+                    hash_mapping[prompt_hash] = tree_idx
+
+            if not tree_indices:
+                logger.warning(
+                    f"None of the {len(hashes)} requested hashes found in cache "
+                    f"(cache has {len(cache_hash_to_tree)} hashes)"
+                )
+                return [], {}
+
+            # Use C++ selective snapshot (efficient)
+            snapshots = self._cache.create_selective_snapshot(tree_indices)
+
+            logger.debug(
+                f"Selective snapshot: {len(snapshots)} trees for {len(hash_mapping)} hashes "
+                f"(out of {self._cache._forest.num_trees()} total trees)"
+            )
+
+            return snapshots, hash_mapping
+
+        except Exception as e:
+            logger.error(f"Failed to create selective snapshot: {e}")
+            return [], {}
+
     def get_metrics(self) -> Dict[str, Any]:
         """
         Get metrics for logging.
 
         Returns:
-            Dict with suffix tree metrics.
+            Dict with suffix tree metrics including memory usage.
         """
         if not self.enabled:
             return {}
@@ -317,6 +433,17 @@ class SuffixTreeManager:
         try:
             cache_stats = self._cache.get_stats()
             metrics["suffix_tree/num_trees"] = cache_stats.get("num_trees_in_forest", 0)
+            metrics["suffix_tree/active_requests"] = cache_stats.get("num_active_requests", 0)
+        except Exception:
+            pass
+
+        # Add memory estimation metrics
+        try:
+            memory_stats = self._cache.get_memory_stats()
+            total_bytes = memory_stats.get("total_bytes", 0)
+            metrics["suffix_tree/memory_bytes"] = total_bytes
+            metrics["suffix_tree/memory_mb"] = total_bytes / (1024 * 1024)
+            metrics["suffix_tree/avg_bytes_per_tree"] = memory_stats.get("avg_bytes_per_tree", 0)
         except Exception:
             pass
 

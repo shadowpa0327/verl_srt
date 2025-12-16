@@ -1187,9 +1187,39 @@ class RayPPOTrainer:
                     # Push suffix tree snapshot to workers before rollout
                     if self.suffix_tree_manager.enabled:
                         with marked_timer("push_suffix_snapshot", timing_raw):
-                            snapshots, hash_mapping = self.suffix_tree_manager.get_snapshot()
+                            # Extract batch hashes for selective snapshot
+                            input_ids = gen_batch_output.batch.get("input_ids")
+                            attention_mask = gen_batch_output.batch.get("attention_mask")
+
+                            if input_ids is not None and attention_mask is not None:
+                                # Convert to numpy if tensors
+                                if hasattr(input_ids, "cpu"):
+                                    input_ids = input_ids.cpu().numpy()
+                                if hasattr(attention_mask, "cpu"):
+                                    attention_mask = attention_mask.cpu().numpy()
+
+                                batch_hashes = self.suffix_tree_manager.extract_batch_hashes(
+                                    input_ids, attention_mask
+                                )
+
+                                if batch_hashes:
+                                    # Use selective snapshot (only trees for this batch)
+                                    snapshots, hash_mapping = self.suffix_tree_manager.get_selective_snapshot(
+                                        hashes=batch_hashes
+                                    )
+                                else:
+                                    # Fallback to full snapshot if no hashes extracted
+                                    snapshots, hash_mapping = self.suffix_tree_manager.get_snapshot()
+                            else:
+                                # Fallback to full snapshot if batch data not available
+                                snapshots, hash_mapping = self.suffix_tree_manager.get_snapshot()
+
                             if snapshots and not self.async_rollout_mode:
                                 self.actor_rollout_wg.load_suffix_snapshot(snapshots, hash_mapping)
+
+                            # Log transfer metrics
+                            metrics["suffix_tree/trees_transferred"] = len(snapshots)
+                            metrics["suffix_tree/transfer_bytes"] = sum(len(s[1]) for s in snapshots)
 
                     # generate a batch
                     with marked_timer("gen", timing_raw, color="red"):
