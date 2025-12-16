@@ -1,0 +1,3 @@
+[submodule "third_party/ArcticInference_srt"]
+	path = third_party/ArcticInference_srt
+	url = git@github.com:shadowpa0327/ArcticInference_srt.git
