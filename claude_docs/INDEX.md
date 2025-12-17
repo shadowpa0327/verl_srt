@@ -20,6 +20,8 @@
 |----------|--------|-------------|
 | [Per-Worker Snapshot Analysis](task_plans/per_worker_snapshot_analysis.md) | Analysis | gRPC-based per-worker tree distribution |
 | [Spec Decode Metrics Aggregation](task_plans/spec_decode_metrics_aggregation.md) | Ready | Multi-GPU metrics reduction |
+| [Proposer C++ Optimization](task_plans/proposer_cpp_optimization.md) | Analysis | Direct InputBatch consumption in C++ |
+| [Proposer ↔ SuffixForest Architecture](task_plans/proposer_suffix_forest_architecture.md) | Reference | Component relationship overview |
 
 ## Future Enhancements
 
