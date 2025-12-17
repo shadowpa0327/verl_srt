@@ -15,6 +15,7 @@ PYTHON_VERSION="3.11"
 PYTHON_VERSION_SHORT="311"
 TORCH_VERSION="2.8"
 FLASHINFER_VERSION="0.3.1"
+VLLM_VERSION="0.11.0"
 VENV_DIR="${VENV_DIR:-.venv}"
 
 # Third-party dependencies directory
@@ -126,8 +127,9 @@ if [ ! -d "${VLLM_DIR}" ] || [ -z "$(ls -A "${VLLM_DIR}")" ]; then
 fi
 echo ">>> vLLM found at ${VLLM_DIR}"
 
-echo ">>> Installing vLLM in editable mode..."
+echo ">>> Installing vLLM ${VLLM_VERSION} in editable mode with precompiled wheel..."
 export VLLM_USE_PRECOMPILED=1
+export VLLM_PRECOMPILED_WHEEL_LOCATION="https://wheels.vllm.ai/${VLLM_VERSION}/vllm-${VLLM_VERSION}-cp38-abi3-manylinux1_x86_64.whl"
 uv pip install --python "${VENV_DIR}/bin/python" -e "${VLLM_DIR}"
 
 # ----------------
