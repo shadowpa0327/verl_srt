@@ -50,6 +50,12 @@ from filelock import FileLock
 from omegaconf import ListConfig
 from tensordict import TensorDict
 from torch.distributed.device_mesh import DeviceMesh
+
+# Apply vLLM patches for suffix decoding BEFORE importing vLLM
+# This enables suffix speculative decoding without requiring a vLLM fork
+from verl.workers.rollout.vllm_rollout.patches import apply_all_patches
+apply_all_patches()
+
 from vllm import LLM, SamplingParams
 from vllm.config import CompilationConfig, LoRAConfig
 from vllm.lora.request import LoRARequest
