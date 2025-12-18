@@ -20,6 +20,7 @@ Usage:
 """
 
 import argparse
+import os
 import sys
 
 import numpy as np
@@ -244,8 +245,11 @@ def test_vllm_extra_args_passthrough(model: str, max_model_len: int = 2048):
     print("Test 2.1: vLLM extra_args Passthrough")
     print("=" * 60)
 
-    import os
     os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
+
+    # Apply monkey patches BEFORE importing vLLM
+    from verl.workers.rollout.vllm_rollout.patches import apply_all_patches
+    apply_all_patches()
 
     from vllm import LLM, SamplingParams
     from arctic_inference.suffix_decoding import compute_prompt_hash
@@ -339,10 +343,10 @@ def test_vllm_extra_args_passthrough(model: str, max_model_len: int = 2048):
         hashes_matched = 0
         for expected_hash in prompt_hashes:
             if expected_hash in captured_hashes:
-                print(f"    Hash {expected_hash}: CAPTURED ✓")
+                print(f"    Hash {expected_hash}: CAPTURED")
                 hashes_matched += 1
             else:
-                print(f"    Hash {expected_hash}: NOT CAPTURED ✗")
+                print(f"    Hash {expected_hash}: NOT CAPTURED")
 
         if hashes_matched == len(prompt_hashes):
             print(f"\n  All {hashes_matched} pre-computed hashes passed through: PASS")

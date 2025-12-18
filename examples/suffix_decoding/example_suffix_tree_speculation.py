@@ -14,9 +14,6 @@ the realistic verl use case. Metrics are cumulative Prometheus counters,
 so we track deltas between phases to measure improvement.
 
 Usage:
-    # Activate the environment first
-    source ../.venv/bin/activate
-
     # Run the example
     python example_suffix_tree_speculation.py --model meta-llama/Llama-3.1-8B-Instruct
 
@@ -26,10 +23,18 @@ Usage:
 
 import argparse
 import gc
+import os
+
 import numpy as np
 from typing import Dict, List, Tuple
-import os
+
+# Disable multiprocessing before any vLLM imports
 os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
+
+# Apply monkey patches BEFORE importing vLLM
+from verl.workers.rollout.vllm_rollout.patches import apply_all_patches
+apply_all_patches()
+
 from vllm import LLM, SamplingParams
 from vllm.v1.metrics.reader import Counter, Vector
 

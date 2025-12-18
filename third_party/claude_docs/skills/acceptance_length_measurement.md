@@ -13,7 +13,7 @@ Quick-reference skill for measuring and interpreting speculative decoding accept
 | **Spec Decode Metrics** | `vllm/vllm/v1/spec_decode/metrics.py` | Metric collection and logging |
 | **Metrics Reader** | `vllm/vllm/v1/metrics/reader.py` | Prometheus metrics API |
 | **Example** | `vllm/examples/offline_inference/spec_decode.py` | Reference implementation |
-| **Local Example** | `third_party/examples/example_suffix_tree_speculation.py` | Suffix tree example |
+| **Local Example** | `examples/suffix_decoding/example_suffix_tree_speculation.py` | Suffix tree example |
 
 ---
 
