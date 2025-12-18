@@ -106,3 +106,51 @@ Acceptance length measures how many speculated tokens are accepted on average:
 - **With patterns**: 2.0+ (multiple speculated tokens accepted)
 
 Higher acceptance length = faster inference.
+
+## Benchmarks
+
+The `benchmarks/` subdirectory contains profiling and comparison tools for evaluating suffix decoding performance.
+
+### Proposer Profiling (`benchmarks/profile_suffix_decoding_proposer.py`)
+
+Detailed latency breakdown of the propose() method, measuring individual operations:
+
+```bash
+# Basic profiling with latency breakdown
+python benchmarks/profile_suffix_decoding_proposer.py
+
+# With Chrome trace export (viewable at chrome://tracing/)
+python benchmarks/profile_suffix_decoding_proposer.py --chrome-trace
+
+# Batch size comparison
+python benchmarks/profile_suffix_decoding_proposer.py --compare
+
+# Custom configuration
+python benchmarks/profile_suffix_decoding_proposer.py \
+    --batch-size 64 \
+    --num-trees 200 \
+    --num-threads 8
+```
+
+### Sequential vs Parallel Comparison (`benchmarks/compare_proposer_implementations.py`)
+
+Compares latency between:
+- **Sequential**: SuffixDecodingCache (dual-tree architecture)
+- **Parallel**: ParallelSuffixDecodingCache (forest architecture with OpenMP)
+
+```bash
+# Default comparison across batch sizes
+python benchmarks/compare_proposer_implementations.py
+
+# Custom configuration
+python benchmarks/compare_proposer_implementations.py \
+    --num-trees 200 \
+    --num-threads 8 \
+    --iterations 100
+```
+
+Output includes:
+- Per-batch latency comparison
+- Speedup ratios
+- Crossover point (where parallel becomes faster)
+- Per-request latency breakdown
