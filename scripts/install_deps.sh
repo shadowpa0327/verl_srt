@@ -117,8 +117,8 @@ uv pip install --python "${VENV_DIR}/bin/python" \
 echo ">>> Installing vLLM from GitHub fork..."
 # Install from suffix_decode branch with precompiled wheel for faster installation
 export VLLM_USE_PRECOMPILED=1
-export VLLM_PRECOMPILED_WHEEL_LOCATION="https://wheels.vllm.ai/${VLLM_VERSION}/vllm-${VLLM_VERSION}-cp38-abi3-manylinux1_x86_64.whl"
-uv pip install --python "${VENV_DIR}/bin/python" "vllm @ git+https://github.com/shadowpa0327/vllm.git@suffix_decode"
+#export VLLM_PRECOMPILED_WHEEL_LOCATION="https://wheels.vllm.ai/${VLLM_VERSION}/vllm-${VLLM_VERSION}-cp38-abi3-manylinux1_x86_64.whl"
+uv pip install vllm==0.11.0
 
 # ----------------
 # ArcticInference
