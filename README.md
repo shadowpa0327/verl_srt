@@ -8,7 +8,7 @@ This repository extends verl with suffix tree-based speculative decoding, enabli
 
 Key additions:
 - **Suffix Tree Integration**: ArcticInference suffix tree for token pattern matching
-- **Modified vLLM**: Custom vLLM fork with suffix decode support
+- **vLLM Monkey Patches**: Runtime patches enabling suffix decoding with vanilla vLLM
 - **Selective Snapshot Distribution**: Efficient tree state transfer to rollout workers
 
 ## Installation
@@ -41,7 +41,7 @@ Key additions:
    - Create a virtual environment at `.venv/`
    - Install PyTorch 2.8.0 with CUDA 12.8
    - Install Flash Attention 2 and FlashInfer
-   - Install vLLM (editable mode from `third_party/vllm`)
+   - Install vLLM from PyPI (vanilla, with runtime patches applied)
    - Install ArcticInference (editable mode from `third_party/ArcticInference_srt`)
    - Install verl in editable mode
 
@@ -64,9 +64,9 @@ verl_srt/
 ├── verl/                    # Core verl library
 │   ├── trainer/             # Training orchestration
 │   ├── workers/             # Distributed workers (actor, critic, rollout)
+│   │   └── rollout/vllm_rollout/patches/  # vLLM monkey patches
 │   └── utils/suffix_tree/   # Suffix tree manager
 ├── third_party/
-│   ├── vllm/                # Modified vLLM with suffix decoding (submodule)
 │   └── ArcticInference_srt/ # Suffix tree implementation (submodule)
 ├── scripts/
 │   └── install_deps.sh      # Installation script
@@ -78,7 +78,6 @@ verl_srt/
 
 | Component | Branch | Description |
 |-----------|--------|-------------|
-| `third_party/vllm` | `suffix_decode` | vLLM fork with suffix speculation APIs |
 | `third_party/ArcticInference_srt` | `dev/grpc_server` | Suffix tree implementation |
 
 To update submodules to latest:

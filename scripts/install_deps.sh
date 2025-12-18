@@ -21,9 +21,6 @@ VENV_DIR="${VENV_DIR:-.venv}"
 # Third-party dependencies directory
 THIRD_PARTY_DIR="${VERL_ROOT}/third_party"
 
-# vLLM - git submodule under third_party
-VLLM_DIR="${THIRD_PARTY_DIR}/vllm"
-
 # ArcticInference - git submodule under third_party
 ARCTIC_DIR="${THIRD_PARTY_DIR}/ArcticInference_srt"
 
@@ -117,20 +114,11 @@ uv pip install --python "${VENV_DIR}/bin/python" \
 # ------
 # vLLM
 # ------
-echo ">>> Setting up vLLM for co-development..."
-mkdir -p "${THIRD_PARTY_DIR}"
-echo ">>> Checking vLLM submodule..."
-if [ ! -d "${VLLM_DIR}" ] || [ -z "$(ls -A "${VLLM_DIR}")" ]; then
-    echo "Error: vLLM submodule not found or empty at ${VLLM_DIR}"
-    echo "Please run: git submodule update --init --recursive"
-    exit 1
-fi
-echo ">>> vLLM found at ${VLLM_DIR}"
-
-echo ">>> Installing vLLM ${VLLM_VERSION} in editable mode with precompiled wheel..."
+echo ">>> Installing vLLM from GitHub fork..."
+# Install from suffix_decode branch with precompiled wheel for faster installation
 export VLLM_USE_PRECOMPILED=1
 export VLLM_PRECOMPILED_WHEEL_LOCATION="https://wheels.vllm.ai/${VLLM_VERSION}/vllm-${VLLM_VERSION}-cp38-abi3-manylinux1_x86_64.whl"
-uv pip install --python "${VENV_DIR}/bin/python" -e "${VLLM_DIR}"
+uv pip install --python "${VENV_DIR}/bin/python" "vllm @ git+https://github.com/shadowpa0327/vllm.git@suffix_decode"
 
 # ----------------
 # ArcticInference
