@@ -1,6 +1,6 @@
 ## Purpose of directory under third_party
-+ **vLLM** - Inference engine with speculative decoding support
 + **ArcticInference_srt** - Suffix tree implementation for speculative decoding
++ **claude_docs** - Documentation for third-party integrations (vLLM, ArcticInference)
 
 ## Documentation Entry Point
 
@@ -21,7 +21,7 @@
 
 | Component | Full Docs |
 |-----------|-----------|
-| vLLM V1 | [`vllm/VLLM_V1_ARCHITECTURE.md`](vllm/VLLM_V1_ARCHITECTURE.md) |
+| vLLM V1 | [`claude_docs/VLLM_V1_ARCHITECTURE.md`](claude_docs/VLLM_V1_ARCHITECTURE.md) |
 | ArcticInference | [`ArcticInference_srt/CLAUDE.md`](ArcticInference_srt/CLAUDE.md) |
 | Parallel Cache API | [`ArcticInference_srt/claude_docs/PARALLEL_CACHE_GUIDE.md`](ArcticInference_srt/claude_docs/PARALLEL_CACHE_GUIDE.md) |
 | Serialization Spec | [`ArcticInference_srt/claude_docs/SUFFIX_TREE_SERIALIZATION.md`](ArcticInference_srt/claude_docs/SUFFIX_TREE_SERIALIZATION.md) |

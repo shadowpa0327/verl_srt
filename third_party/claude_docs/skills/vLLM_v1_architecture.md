@@ -9,7 +9,7 @@ Quick-reference skill for navigating vLLM V1's architecture when working on spec
 
 | Document | Path | Description |
 |----------|------|-------------|
-| **Primary** | `third_party/vllm/VLLM_V1_ARCHITECTURE.md` | Full architecture documentation |
+| **Primary** | `third_party/claude_docs/VLLM_V1_ARCHITECTURE.md` | Full architecture documentation |
 | **Integration** | `third_party/claude_docs/role_of_third_party_lib.md` | Integration architecture overview |
 
 ---

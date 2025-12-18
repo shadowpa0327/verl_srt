@@ -65,9 +65,9 @@ self.inference_engine.load_snapshot(snapshots, hash_mapping)
 
 | Component | Location |
 |-----------|----------|
-| vLLM API | `third_party/vllm/vllm/entrypoints/llm.py` → `load_snapshot()` |
+| vLLM patches | `verl/workers/rollout/vllm_rollout/patches/` → runtime monkey patches |
+| vLLM API | `verl/workers/rollout/vllm_rollout/patches/llm_patches.py` → `load_snapshot()` |
 | Cache API | `third_party/ArcticInference_srt/arctic_inference/suffix_decoding/parallel_cache.py` |
-| Full example | `third_party/examples/example_suffix_tree_speculation.py` |
 | verl rollout | `verl/workers/rollout/vllm_rollout/vllm_rollout_spmd.py` |
 
 ## Critical Notes
