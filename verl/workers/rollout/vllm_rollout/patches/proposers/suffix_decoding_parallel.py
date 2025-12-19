@@ -81,10 +81,10 @@ class ParallelSuffixDecodingProposer:
         """
         Propose speculative tokens for each request in the input batch.
 
-        This method processes all requests in parallel using batch operations:
+        This method processes all requests in parallel using optimized batch operations:
         1. Identifies active requests and starts new ones if needed
         2. Adds newly sampled tokens to all active requests in parallel (batch_add_tokens)
-        3. Performs speculation across all requests in parallel (batch_speculate)
+        3. Performs optimized speculation using propose_from_batch (zero-copy context extraction)
 
         Args:
             input_batch: Batch of input requests
@@ -93,19 +93,15 @@ class ParallelSuffixDecodingProposer:
         Returns:
             List of draft token IDs for each request
         """
+        import numpy as np
+
         # Collect data for batch operations
         req_ids_to_add_tokens = []
         tokens_to_add = []
 
-        req_ids_to_speculate = []
-        contexts_to_speculate = []
-        max_spec_tokens_list = []
-
-        # Map from req_id to index in speculation batch
-        req_id_to_spec_index = {}
-
         # Track which input batch indices should receive draft tokens
         input_indices_with_drafts = []
+        batch_indices_for_speculation = []
 
         # Process each request and prepare batch data
         for i, sampled_ids in enumerate(sampled_token_ids):
@@ -145,35 +141,48 @@ class ParallelSuffixDecodingProposer:
             req_ids_to_add_tokens.append(req_id)
             tokens_to_add.append(sampled_ids)
 
-            # Collect contexts for speculation (for batch_speculate)
-            # Suffix decoding only uses the most recent tokens up to max_tree_depth
-            start = max(0, num_tokens - self.max_tree_depth)
-            pattern = input_batch.token_ids_cpu[i, start:num_tokens]
-
-            req_ids_to_speculate.append(req_id)
-            contexts_to_speculate.append(pattern)
-            max_spec_tokens_list.append(
-                min(self.num_speculative_tokens, self.max_model_len - num_tokens - 1)
-            )
-
-            # Map req_id to its position in speculation results
-            req_id_to_spec_index[req_id] = len(req_ids_to_speculate) - 1
+            # Track batch indices for optimized speculation
+            batch_indices_for_speculation.append(i)
             input_indices_with_drafts.append(i)
 
         # BATCH ADD TOKENS: Add all newly sampled tokens in parallel
         if req_ids_to_add_tokens:
             self.suffix_cache.batch_add_tokens(req_ids_to_add_tokens, tokens_to_add)
 
-        # BATCH SPECULATE: Perform speculation for all requests in parallel
+        # OPTIMIZED BATCH SPECULATE: Use propose_from_batch for zero-copy context extraction
         drafts = []
-        if req_ids_to_speculate:
-            # Find the minimum max_spec_tokens to use for all requests
-            # (for simplicity, we use the same value for all)
+        if batch_indices_for_speculation:
+            # Prepare numpy arrays for propose_from_batch
+            batch_indices_array = np.array(batch_indices_for_speculation, dtype=np.int32)
+
+            # Extract token_ids_cpu for the batch (2D slice)
+            token_ids_batch = input_batch.token_ids_cpu[batch_indices_array]
+
+            # Extract num_tokens for the batch
+            num_tokens_batch = input_batch.num_tokens_no_spec[batch_indices_array].astype(np.int32)
+
+            # Get tree indices for each request
+            tree_indices_list = []
+            for i in batch_indices_for_speculation:
+                req_id = input_batch.req_ids[i]
+                tree_idx = self.suffix_cache.get_tree_idx_for_request(req_id)
+                if tree_idx is None:
+                    raise RuntimeError(f"Request {req_id} should be active but tree_idx is None")
+                tree_indices_list.append(tree_idx)
+            tree_indices_batch = np.array(tree_indices_list, dtype=np.int32)
+
+            # Calculate max_spec_tokens (use minimum across batch for simplicity)
+            max_spec_tokens_list = [
+                min(self.num_speculative_tokens, self.max_model_len - input_batch.num_tokens_no_spec[i] - 1)
+                for i in batch_indices_for_speculation
+            ]
             min_max_spec_tokens = min(max_spec_tokens_list) if max_spec_tokens_list else self.num_speculative_tokens
 
-            drafts = self.suffix_cache.batch_speculate(
-                req_ids=req_ids_to_speculate,
-                contexts=contexts_to_speculate,
+            # Call optimized C++ method (zero-copy, parallelized)
+            drafts = self.suffix_cache.propose_from_batch(
+                token_ids_cpu=token_ids_batch,
+                num_tokens=num_tokens_batch,
+                tree_indices=tree_indices_batch,
                 max_spec_tokens=min_max_spec_tokens,
                 max_spec_factor=self.max_spec_factor,
                 min_token_prob=self.min_token_prob,
