@@ -25,8 +25,9 @@ and provides methods to:
 import logging
 import os
 import pickle
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from collections import deque
+from dataclasses import dataclass
+from typing import Any, Deque, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -44,6 +45,8 @@ class SuffixTreeManagerConfig:
             Set to 0 to disable hash-based sharing.
         num_threads: Number of threads for parallel operations (-1 = auto).
         parallel_threshold: Minimum batch size to trigger parallelization.
+        max_sequences_per_tree: Maximum sequences to keep per tree. When exceeded,
+            oldest sequences are evicted. Set to 0 to disable eviction (default).
     """
 
     enable: bool = False
@@ -51,6 +54,7 @@ class SuffixTreeManagerConfig:
     hash_token_count: int = 128
     num_threads: int = -1
     parallel_threshold: int = 4
+    max_sequences_per_tree: int = 0  # 0 = disabled (unbounded)
 
 
 class SuffixTreeManager:
@@ -94,6 +98,10 @@ class SuffixTreeManager:
         self._cache = None
         self._batch_counter = 0
         self._total_responses = 0
+        self._total_evicted = 0
+
+        # Track sequences for eviction: tree_idx → deque of (batch_num, req_id, seq_id)
+        self._tree_sequence_history: Dict[int, Deque[Tuple[int, str, int]]] = {}
 
         if config.enable:
             self._initialize_cache()
@@ -231,8 +239,29 @@ class SuffixTreeManager:
             # The hash-based sharing will ensure future requests with the same
             # prompt reuse the existing tree.
 
+            # Track sequence for eviction (if eviction is enabled)
+            if self.config.max_sequences_per_tree > 0:
+                tree_idx = self._cache._req_to_tree_idx.get(req_id)
+                seq_id = self._cache._req_to_seq_id.get(req_id)
+                if tree_idx is not None and seq_id is not None:
+                    if tree_idx not in self._tree_sequence_history:
+                        self._tree_sequence_history[tree_idx] = deque()
+                    self._tree_sequence_history[tree_idx].append(
+                        (self._batch_counter, req_id, seq_id)
+                    )
+
             stats["suffix_tree/prompts_processed"] += 1
             self._total_responses += 1
+
+        # Run eviction check
+        if self.config.max_sequences_per_tree > 0:
+            evicted = self._run_eviction_pass()
+            if evicted > 0:
+                self._total_evicted += evicted
+                stats["suffix_tree/sequences_evicted"] = evicted
+                logger.info(
+                    f"Evicted {evicted} sequences (total evicted: {self._total_evicted})"
+                )
 
         # Add cache statistics
         try:
@@ -291,6 +320,65 @@ class SuffixTreeManager:
         # Reverse the mask to find from the right
         last_non_pad = len(token_ids) - 1 - mask[::-1].argmax()
         return token_ids[: last_non_pad + 1].tolist()
+
+    def _maybe_evict_old_sequences(self, tree_idx: int) -> int:
+        """
+        Evict oldest sequences from a tree if it exceeds max_sequences_per_tree.
+
+        This implements FIFO eviction: oldest sequences (by batch number) are
+        removed first until the tree is within the configured limit.
+
+        Args:
+            tree_idx: Index of the tree to check for eviction.
+
+        Returns:
+            Number of sequences evicted.
+        """
+        if self.config.max_sequences_per_tree <= 0:
+            return 0  # Eviction disabled
+
+        history = self._tree_sequence_history.get(tree_idx)
+        if not history:
+            return 0
+
+        evicted = 0
+        while len(history) > self.config.max_sequences_per_tree:
+            batch_num, req_id, seq_id = history.popleft()
+
+            try:
+                # Remove sequence from C++ tree
+                tree = self._cache._forest.get_tree(tree_idx)
+                tree.remove(seq_id)
+
+                # Clean up Python tracking dictionaries
+                self._cache._req_to_tree_idx.pop(req_id, None)
+                self._cache._req_to_seq_id.pop(req_id, None)
+
+                evicted += 1
+                logger.debug(
+                    f"Evicted sequence {seq_id} (req_id={req_id}, batch={batch_num}) "
+                    f"from tree {tree_idx}"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Failed to evict sequence {seq_id} from tree {tree_idx}: {e}"
+                )
+                # Continue with next sequence even if this one failed
+                continue
+
+        return evicted
+
+    def _run_eviction_pass(self) -> int:
+        """
+        Run eviction check across all trees.
+
+        Returns:
+            Total number of sequences evicted across all trees.
+        """
+        total_evicted = 0
+        for tree_idx in list(self._tree_sequence_history.keys()):
+            total_evicted += self._maybe_evict_old_sequences(tree_idx)
+        return total_evicted
 
     def get_snapshot(self) -> Tuple[List[Tuple[int, bytes]], Dict[str, int]]:
         """
@@ -420,7 +508,7 @@ class SuffixTreeManager:
         Get metrics for logging.
 
         Returns:
-            Dict with suffix tree metrics including memory usage.
+            Dict with suffix tree metrics including memory usage and eviction stats.
         """
         if not self.enabled:
             return {}
@@ -428,6 +516,7 @@ class SuffixTreeManager:
         metrics = {
             "suffix_tree/total_responses": self._total_responses,
             "suffix_tree/batch_counter": self._batch_counter,
+            "suffix_tree/total_evicted": self._total_evicted,
         }
 
         try:
@@ -446,6 +535,28 @@ class SuffixTreeManager:
             metrics["suffix_tree/avg_bytes_per_tree"] = memory_stats.get("avg_bytes_per_tree", 0)
         except Exception:
             pass
+
+        # Add eviction-related metrics
+        if self._tree_sequence_history:
+            total_sequences = sum(
+                len(history) for history in self._tree_sequence_history.values()
+            )
+            num_trees_with_history = len(self._tree_sequence_history)
+            metrics["suffix_tree/total_sequences"] = total_sequences
+            metrics["suffix_tree/avg_sequences_per_tree"] = (
+                total_sequences / num_trees_with_history if num_trees_with_history > 0 else 0
+            )
+            metrics["suffix_tree/max_sequences_in_tree"] = max(
+                len(history) for history in self._tree_sequence_history.values()
+            )
+
+            # Find oldest sequence batch number (staleness indicator)
+            oldest_batch = min(
+                (history[0][0] for history in self._tree_sequence_history.values() if history),
+                default=self._batch_counter
+            )
+            metrics["suffix_tree/oldest_sequence_batch"] = oldest_batch
+            metrics["suffix_tree/oldest_sequence_age"] = self._batch_counter - oldest_batch
 
         return metrics
 
@@ -472,11 +583,18 @@ class SuffixTreeManager:
                 "hash_token_count": self.config.hash_token_count,
                 "num_threads": self.config.num_threads,
                 "parallel_threshold": self.config.parallel_threshold,
+                "max_sequences_per_tree": self.config.max_sequences_per_tree,
             },
             "snapshots": snapshots,
             "hash_mapping": hash_mapping,
             "batch_counter": self._batch_counter,
             "total_responses": self._total_responses,
+            "total_evicted": self._total_evicted,
+            # Convert deques to lists for pickling
+            "tree_sequence_history": {
+                tree_idx: list(history)
+                for tree_idx, history in self._tree_sequence_history.items()
+            },
         }
 
         state_path = os.path.join(path, "suffix_tree_state.pkl")
@@ -510,6 +628,14 @@ class SuffixTreeManager:
             # Restore counters
             self._batch_counter = state.get("batch_counter", 0)
             self._total_responses = state.get("total_responses", 0)
+            self._total_evicted = state.get("total_evicted", 0)
+
+            # Restore sequence history (convert lists back to deques)
+            saved_history = state.get("tree_sequence_history", {})
+            self._tree_sequence_history = {
+                tree_idx: deque(history)
+                for tree_idx, history in saved_history.items()
+            }
 
             # Restore cache from snapshot
             snapshots = state.get("snapshots", [])
@@ -523,8 +649,23 @@ class SuffixTreeManager:
                     self._cache.load_snapshot(snapshots, hash_to_tree=hash_mapping)
                     logger.info(
                         f"Loaded suffix tree state from {state_path}: "
-                        f"{len(snapshots)} trees, {len(hash_mapping)} hash mappings"
+                        f"{len(snapshots)} trees, {len(hash_mapping)} hash mappings, "
+                        f"{len(self._tree_sequence_history)} trees with history"
                     )
+
+                    # Warn if eviction is enabled but history is missing/incomplete
+                    if self.config.max_sequences_per_tree > 0:
+                        num_trees = len(snapshots)
+                        num_trees_with_history = len(self._tree_sequence_history)
+                        if num_trees_with_history < num_trees:
+                            logger.warning(
+                                f"Eviction enabled but sequence history missing for "
+                                f"{num_trees - num_trees_with_history}/{num_trees} trees. "
+                                f"Existing sequences in these trees won't be evicted until "
+                                f"new sequences are added. This can happen when loading a "
+                                f"checkpoint saved with eviction disabled."
+                            )
+
                     return True
 
         except Exception as e:
@@ -538,4 +679,6 @@ class SuffixTreeManager:
             self._initialize_cache()
             self._batch_counter = 0
             self._total_responses = 0
+            self._total_evicted = 0
+            self._tree_sequence_history.clear()
             logger.info("Reset suffix tree manager")

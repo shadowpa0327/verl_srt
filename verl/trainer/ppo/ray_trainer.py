@@ -456,10 +456,12 @@ class RayPPOTrainer:
                     enable=True,
                     max_tree_depth=getattr(suffix_config, "max_tree_depth", 64),
                     hash_token_count=getattr(suffix_config, "hash_token_count", 128),
+                    max_sequences_per_tree=getattr(suffix_config, "max_sequences_per_tree", 0),
                 )
                 print(
                     f"Initializing SuffixTreeManager with max_tree_depth={manager_config.max_tree_depth}, "
-                    f"hash_token_count={manager_config.hash_token_count}"
+                    f"hash_token_count={manager_config.hash_token_count}, "
+                    f"max_sequences_per_tree={manager_config.max_sequences_per_tree}"
                 )
                 return SuffixTreeManager(manager_config, self.tokenizer)
         except (AttributeError, ConfigAttributeError):
