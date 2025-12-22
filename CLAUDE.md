@@ -38,15 +38,11 @@ INSTRUCTIONS FOR CLAUDE:
 - Update this section as tasks progress
 - Mark completed tasks with [x]
 - Add new tasks as they emerge
-- Last updated: 2025-12-16
+- Last updated: 2025-12-21
 -->
 
 ### Active
 - [ ] Test suffix tree integration end-to-end with training run
-- [ ] Implement spec decode metrics aggregation across workers
-  - Details: [`claude_docs/task_plans/spec_decode_metrics_aggregation.md`](claude_docs/task_plans/spec_decode_metrics_aggregation.md)
-- [ ] Implement per-worker snapshot distribution (gRPC)
-  - Analysis: [`claude_docs/task_plans/per_worker_snapshot_analysis.md`](claude_docs/task_plans/per_worker_snapshot_analysis.md)
 
 ### Completed
 - [x] Selective suffix-tree snapshot distribution
@@ -54,12 +50,14 @@ INSTRUCTIONS FOR CLAUDE:
 - [x] Hash-based tree mapping in ArcticInference
 - [x] Direct access `llm.load_snapshot()` API in vLLM
 - [x] Per-rollout spec decode metrics
+- [x] Proposer C++ optimization (`propose_from_batch` zero-copy API)
+- [x] Spec decode metrics aggregation across workers
 
 ### Skills (Implemented Reference)
 
 | Skill | Description |
 |-------|-------------|
-| [Suffix Tree VERL Integration](claude_docs/skills/suffix_tree_verl_integration.md) | SuffixTreeManager integration with trainer |
+| [Suffix Tree Speculation](claude_docs/skills/suffix_tree_speculation.md) | Complete speculation system (VERL + vLLM + ArcticInference) |
 | [Selective Snapshot Distribution](claude_docs/skills/selective_snapshot_distribution.md) | Batch-specific tree transfer |
 
 ### Future
