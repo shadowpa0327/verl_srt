@@ -348,3 +348,7 @@ suffix_decoding:
   # Set to 0 to disable hash-based sharing (one tree per request)
   hash_token_count: 128
 
+  # Maximum sequences to keep per tree. When exceeded, oldest sequences are evicted.
+  # Set to 0 to disable eviction (unbounded growth). Only used in local mode.
+  max_sequences_per_tree: 0
+

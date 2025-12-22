@@ -134,6 +134,11 @@ class SuffixDecodingConfig(BaseConfig):
     # Set to 0 to disable hash-based sharing (one tree per request)
     hash_token_count: int = 128
 
+    # Maximum sequences to keep per tree (for local mode)
+    # When exceeded, oldest sequences are evicted (FIFO)
+    # Set to 0 to disable eviction (unbounded growth)
+    max_sequences_per_tree: int = 0
+
 
 @dataclass
 class RolloutConfig(BaseConfig):

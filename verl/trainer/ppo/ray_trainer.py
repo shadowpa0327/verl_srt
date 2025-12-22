@@ -18,12 +18,8 @@ PPO Trainer with Ray-based single controller.
 This trainer supports model-agonistic model initialization with huggingface
 """
 
-import atexit
-import importlib.util
 import json
 import os
-import subprocess
-import sys
 import uuid
 from collections import defaultdict
 from copy import deepcopy
@@ -319,9 +315,6 @@ class RayPPOTrainer:
         self.reward_fn = reward_fn
         self.val_reward_fn = val_reward_fn
 
-        # Suffix server process tracking
-        self.suffix_server_process: Optional[subprocess.Popen] = None
-
         self.hybrid_engine = config.actor_rollout_ref.hybrid_engine
         assert self.hybrid_engine, "Currently, only support hybrid engine"
 
@@ -456,10 +449,12 @@ class RayPPOTrainer:
                     enable=True,
                     max_tree_depth=getattr(suffix_config, "max_tree_depth", 64),
                     hash_token_count=getattr(suffix_config, "hash_token_count", 128),
+                    max_sequences_per_tree=getattr(suffix_config, "max_sequences_per_tree", 0),
                 )
                 print(
                     f"Initializing SuffixTreeManager with max_tree_depth={manager_config.max_tree_depth}, "
-                    f"hash_token_count={manager_config.hash_token_count}"
+                    f"hash_token_count={manager_config.hash_token_count}, "
+                    f"max_sequences_per_tree={manager_config.max_sequences_per_tree}"
                 )
                 return SuffixTreeManager(manager_config, self.tokenizer)
         except (AttributeError, ConfigAttributeError):
@@ -714,92 +709,6 @@ class RayPPOTrainer:
 
         return metric_dict
 
-    def _get_arctic_inference_path(self) -> Optional[Path]:
-        """Get the path to the arctic_inference package."""
-        try:
-            spec = importlib.util.find_spec("arctic_inference")
-            if spec is None or spec.origin is None:
-                return None
-            package_path = Path(spec.origin).parent
-            return package_path
-        except Exception:
-            return None
-
-    def _start_suffix_server(self):
-        """Start the suffix decoding gRPC server if enabled."""
-        # Check if suffix_decoding config exists (may not be present in older configs)
-        try:
-            suffix_config = self.config.actor_rollout_ref.rollout.suffix_decoding
-        except (AttributeError, KeyError, ConfigAttributeError):
-            # suffix_decoding not configured, skip
-            return
-
-        if not suffix_config.get("enable", False):
-            return
-
-        if not suffix_config.get("auto_manage_server", True):
-            print("Suffix decoding enabled with manual server management")
-            return
-
-        port = suffix_config.get("server_port", 50051)
-        max_tree_depth = suffix_config.get("max_tree_depth", 24)
-
-        print(f"Starting suffix decoding server on port {port}...")
-
-        arctic_path = self._get_arctic_inference_path()
-        if arctic_path is None:
-            raise RuntimeError(
-                "arctic_inference package not found. "
-                "Please install it to use suffix_remote speculative decoding."
-            )
-
-        cwd = str(arctic_path)
-
-        self.suffix_server_process = subprocess.Popen(
-            [
-                sys.executable,
-                "-m",
-                "arctic_inference.suffix_decoding.server",
-                "--port",
-                str(port),
-                "--max-tree-depth",
-                str(max_tree_depth),
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            cwd=cwd,
-        )
-
-        # Wait for server to start
-        import time
-
-        time.sleep(2)
-
-        if self.suffix_server_process.poll() is not None:
-            stdout, stderr = self.suffix_server_process.communicate()
-            raise RuntimeError(
-                f"Suffix server failed to start.\n"
-                f"stdout: {stdout.decode()}\n"
-                f"stderr: {stderr.decode()}"
-            )
-
-        print(f"Suffix server started with PID {self.suffix_server_process.pid}")
-
-        # Register cleanup handler
-        atexit.register(self._stop_suffix_server)
-
-    def _stop_suffix_server(self):
-        """Stop the suffix decoding server."""
-        if self.suffix_server_process and self.suffix_server_process.poll() is None:
-            print(f"Stopping suffix server (PID {self.suffix_server_process.pid})...")
-            self.suffix_server_process.terminate()
-            try:
-                self.suffix_server_process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self.suffix_server_process.kill()
-                self.suffix_server_process.wait()
-            print("Suffix server stopped.")
-
     def init_workers(self):
         """Initialize distributed training workers using Ray backend.
 
@@ -807,9 +716,6 @@ class RayPPOTrainer:
         1. Ray resource pools from configuration
         2. Worker groups for each role (actor, critic, etc.)
         """
-        # Start suffix server BEFORE creating workers
-        self._start_suffix_server()
-
         self.resource_pool_manager.create_resource_pool()
 
         self.resource_pool_to_cls = {pool: {} for pool in self.resource_pool_manager.resource_pool_dict.values()}
