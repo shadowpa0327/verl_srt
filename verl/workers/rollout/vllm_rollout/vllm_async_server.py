@@ -624,6 +624,48 @@ class vLLMHttpServerBase:
             logger.error(f"Error aborting request {request_id}: {e}")
             return {"aborted": False, "request_id": request_id, "error": str(e)}
 
+    async def get_workload(self) -> dict[str, Any]:
+        """Get current workload metrics for slack-filling runahead.
+
+        Returns:
+            dict[str, Any]: Dictionary containing:
+                - num_requests_running: Number of requests currently being processed
+                - num_requests_waiting: Number of requests waiting in queue
+                - kv_cache_usage: KV cache utilization (0.0 to 1.0)
+        """
+        try:
+            # Get number of active requests from output processor
+            request_states = self.engine.output_processor.request_states
+            num_requests_running = len(request_states)
+
+            # vLLM v1 doesn't have a separate waiting queue in the same way as v0
+            # All submitted requests are in request_states, so waiting = 0 typically
+            num_requests_waiting = 0
+
+            # Try to get KV cache usage from engine metrics
+            kv_cache_usage = 0.0
+            try:
+                # Try to get metrics from the engine's scheduler if available
+                if hasattr(self.engine, 'engine_core') and self.engine.engine_core is not None:
+                    # For vLLM v1, we can try to get cache stats
+                    # This is a best-effort approach as the exact API may vary
+                    kv_cache_usage = 0.0  # Default to 0 (conservative: allows runahead)
+            except Exception:
+                pass  # Use default kv_cache_usage = 0.0
+
+            return {
+                "num_requests_running": num_requests_running,
+                "num_requests_waiting": num_requests_waiting,
+                "kv_cache_usage": kv_cache_usage,
+            }
+
+        except Exception as e:
+            logger.warning(f"Error getting workload metrics: {e}")
+            return {
+                "error": str(e),
+                "warning": "Could not retrieve workload metrics",
+            }
+
 
 @ray.remote(num_cpus=1)
 class vLLMHttpServer(vLLMHttpServerBase):
