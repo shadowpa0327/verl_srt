@@ -630,46 +630,91 @@ class vLLMHttpServerBase:
             return {"aborted": False, "request_id": request_id, "error": str(e)}
 
     async def get_workload(self) -> dict[str, Any]:
-        """Get current workload metrics for slack-filling runahead.
+        """Get current workload metrics from vLLM server via Prometheus /metrics endpoint.
 
         Returns:
             dict[str, Any]: Dictionary containing:
                 - num_requests_running: Number of requests currently being processed
                 - num_requests_waiting: Number of requests waiting in queue
-                - kv_cache_usage: KV cache utilization (0.0 to 1.0)
+                - kv_cache_usage: KV cache utilization percentage (0.0-1.0)
         """
+        if self.node_rank != 0:
+            return {"error": "Metrics only available on node_rank=0"}
+
+        if self._server_port is None:
+            return {"error": "Server not yet started"}
+
         try:
-            # Get number of active requests from output processor
-            request_states = self.engine.output_processor.request_states
-            num_requests_running = len(request_states)
+            import aiohttp
 
-            # vLLM v1 doesn't have a separate waiting queue in the same way as v0
-            # All submitted requests are in request_states, so waiting = 0 typically
-            num_requests_waiting = 0
+            metrics_url = f"http://{self._server_address}:{self._server_port}/metrics"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(metrics_url, timeout=aiohttp.ClientTimeout(total=5)) as response:
+                    if response.status != 200:
+                        return {"error": f"Failed to fetch metrics: HTTP {response.status}"}
+                    metrics_text = await response.text()
 
-            # Try to get KV cache usage from engine metrics
-            kv_cache_usage = 0.0
-            try:
-                # Try to get metrics from the engine's scheduler if available
-                if hasattr(self.engine, 'engine_core') and self.engine.engine_core is not None:
-                    # For vLLM v1, we can try to get cache stats
-                    # This is a best-effort approach as the exact API may vary
-                    kv_cache_usage = 0.0  # Default to 0 (conservative: allows runahead)
-            except Exception:
-                pass  # Use default kv_cache_usage = 0.0
+            if not metrics_text.strip():
+                logger.warning("Prometheus /metrics endpoint returned empty response")
+                return {"error": "Empty metrics response"}
 
-            return {
-                "num_requests_running": num_requests_running,
-                "num_requests_waiting": num_requests_waiting,
-                "kv_cache_usage": kv_cache_usage,
+            # Parse Prometheus format metrics
+            result: dict[str, Any] = {}
+
+            # Metric name variants across vLLM versions
+            running_names = {"vllm:num_requests_running", "vllm_num_requests_running"}
+            waiting_names = {"vllm:num_requests_waiting", "vllm_num_requests_waiting"}
+            kv_cache_names = {
+                "vllm:kv_cache_usage_perc",
+                "vllm_kv_cache_usage_perc",
+                "vllm:gpu_cache_usage_perc",
+                "vllm_gpu_cache_usage_perc",
             }
+
+            # Collect all metric names for debugging
+            found_metric_names = set()
+
+            for line in metrics_text.split("\n"):
+                line = line.strip()
+                if line.startswith("#") or not line:
+                    continue
+
+                # Parse metric lines: metric_name{labels} value or metric_name value
+                if " " in line:
+                    metric_part, value_str = line.rsplit(" ", 1)
+                    try:
+                        value = float(value_str)
+                    except ValueError:
+                        continue
+
+                    # Extract metric name (without labels)
+                    metric_name = metric_part.split("{")[0]
+                    found_metric_names.add(metric_name)
+
+                    # Extract the metrics we care about
+                    if metric_name in running_names:
+                        result["num_requests_running"] = int(value)
+                    elif metric_name in waiting_names:
+                        result["num_requests_waiting"] = int(value)
+                    elif metric_name in kv_cache_names:
+                        result["kv_cache_usage"] = value
+
+            # Warn if expected metrics not found
+            if not result:
+                vllm_metrics = [m for m in found_metric_names if "vllm" in m.lower()]
+                logger.warning(
+                    f"No workload metrics found in Prometheus response. "
+                    f"Found {len(found_metric_names)} metrics total, "
+                    f"{len(vllm_metrics)} vllm-related: {vllm_metrics[:10]}"
+                )
+                result["warning"] = "No workload metrics found"
+                result["available_vllm_metrics"] = vllm_metrics[:20]
+
+            return result
 
         except Exception as e:
-            logger.warning(f"Error getting workload metrics: {e}")
-            return {
-                "error": str(e),
-                "warning": "Could not retrieve workload metrics",
-            }
+            logger.error(f"Error getting workload metrics: {e}")
+            return {"error": str(e)}
 
 
 @ray.remote(num_cpus=1)
@@ -826,6 +871,25 @@ class vLLMReplica(RolloutReplica):
                 return r
 
         return {"aborted": False, "request_id": request_id, "error": "Request not found on any server"}
+
+    async def get_workload(self) -> dict[str, Any]:
+        """Get current workload metrics from this replica's primary vLLM server.
+
+        Note: In AgentLoop architecture with multiple replicas, each replica has its own
+        vLLM engine. To get aggregate workload across all replicas, call get_workload()
+        on each replica and sum the results.
+
+        Returns:
+            dict[str, Any]: Dictionary containing:
+                - replica_rank: This replica's rank (for identification in multi-replica setups)
+                - num_requests_running: Number of requests currently being processed
+                - num_requests_waiting: Number of requests waiting in queue
+                - kv_cache_usage: KV cache utilization percentage (0.0-1.0)
+        """
+        # Only the first server (node_rank=0) has the metrics endpoint
+        result = await self.servers[0].get_workload.remote()
+        result["replica_rank"] = self.replica_rank
+        return result
 
 
 def _qwen2_5_vl_dedup_image_tokens(prompt_ids: list[int], processor):

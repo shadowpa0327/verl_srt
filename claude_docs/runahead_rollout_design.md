@@ -557,321 +557,62 @@ class SecondaryWorkQueue:
 
 ### 3. RunaheadServerManager
 
-Extension to AsyncLLMServerManager:
+Extension to `AsyncLLMServerManager` with:
 
-```python
-class RunaheadServerManager(AsyncLLMServerManager):
-    """ServerManager with runahead support."""
-
-    def __init__(self, config, server_handles, max_cache_size=10000):
-        super().__init__(config, server_handles, max_cache_size)
-
-        # Secondary routing (separate from primary LRU)
-        self._secondary_rr_idx = 0
-
-        # Request tracking for targeted abort
-        self._request_to_server: dict[str, int] = {}
-
-        # Metrics
-        self.secondary_submitted = 0
-        self.secondary_completed = 0
-        self.secondary_aborted = 0
-        self.secondary_rejected = 0
-
-    def _choose_server_secondary(self) -> tuple[Any, int]:
-        """Round-robin for secondary (don't pollute primary LRU)."""
-        idx = self._secondary_rr_idx % self.num_servers
-        self._secondary_rr_idx += 1
-        return self.server_handles[idx], idx
-
-    async def generate_secondary(
-        self,
-        sample_id: str,
-        prompt_ids: list[int],
-        sampling_params: dict,
-    ) -> SecondaryOutput:
-        """Generate with secondary-specific routing."""
-        server, server_idx = self._choose_server_secondary()
-        server_request_id = uuid4().hex
-
-        self._request_to_server[server_request_id] = server_idx
-        self.secondary_submitted += 1
-
-        try:
-            output = await server.generate.remote(
-                request_id=server_request_id,
-                prompt_ids=prompt_ids,
-                sampling_params=sampling_params,
-                meta={"kind": "secondary"},
-            )
-
-            stop_reason = getattr(output, "stop_reason", "completed")
-
-            if stop_reason == "rejected":
-                self.secondary_rejected += 1
-                return SecondaryOutput(
-                    sample_id=sample_id,
-                    output=None,
-                    status="rejected",
-                    tokens_generated=0,
-                )
-
-            self.secondary_completed += 1
-            return SecondaryOutput(
-                sample_id=sample_id,
-                output=output,
-                status=stop_reason or "completed",
-                tokens_generated=len(getattr(output, "token_ids", [])),
-            )
-
-        finally:
-            self._request_to_server.pop(server_request_id, None)
-
-    async def abort_requests(self, server_request_ids: list[str]) -> dict:
-        """Targeted abort (multi-worker safe)."""
-        if not server_request_ids:
-            return {"aborted_count": 0}
-
-        # Group by server
-        by_server: dict[int, list[str]] = {}
-        for rid in server_request_ids:
-            if rid in self._request_to_server:
-                idx = self._request_to_server[rid]
-                by_server.setdefault(idx, []).append(rid)
-
-        # Parallel abort
-        async def abort_on_server(idx, ids):
-            try:
-                result = await self.server_handles[idx].abort_requests.remote(ids)
-                return result.get("aborted_count", 0)
-            except Exception:
-                return 0
-
-        tasks = [abort_on_server(idx, ids) for idx, ids in by_server.items()]
-        counts = await asyncio.gather(*tasks)
-
-        total = sum(counts)
-        self.secondary_aborted += total
-
-        return {"aborted_count": total}
-```
+- **Secondary routing**: Round-robin (don't pollute primary LRU cache)
+- **Request tracking**: Maps `server_request_id → server_idx` for targeted abort
+- **Request kind plumbing**: Sets `sampling_params["_verl_request_kind"] = "secondary"`;
+  the admission wrapper pops this key before forwarding to vLLM
+- **Targeted abort**: Groups requests by server, issues per-id `abort_request()` calls
+  in parallel (vLLM exposes per-request abort, not batch)
 
 ### 4. RunaheadWorker (4-Phase Execution)
 
-```python
-class RunaheadWorkerMixin:
-    """Mixin for 4-phase runahead execution."""
+Each worker executes the 4-phase pattern (see timeline diagrams above):
 
-    async def run_with_runahead(
-        self,
-        primary_prompts: list[PromptData],
-        step_id: str,
-        worker_id: int,
-        step_barrier,           # Ray actor handle
-        secondary_work_queue,   # Ray actor handle
-        config: RunaheadConfig,
-    ) -> WorkerRunaheadResult:
-        """4-phase runahead execution."""
+1. **Phase 1**: Run primary batch + opportunistically launch secondary when slack detected
+2. **Phase 2**: When local primary done, notify `StepBarrier.mark_primary_done()`
+3. **Phase 3**: Keep launching secondary until `StepBarrier.is_done()` returns true
+4. **Phase 4**: Abort remaining secondary by `server_request_id`, collect partial results
 
-        primary_results = []
-        secondary_results = []
-        secondary_inflight: dict[str, tuple[asyncio.Task, str]] = {}  # sample_id -> (task, server_request_id)
-
-        # Create primary tasks
-        primary_tasks = {
-            asyncio.create_task(self._run_primary(p)): p.sample_id
-            for p in primary_prompts
-        }
-        pending_primary = set(primary_tasks.keys())
-
-        # ─────────────────────────────────────────────────────────────
-        # PHASE 1: Primary execution with opportunistic secondary filling
-        # ─────────────────────────────────────────────────────────────
-        while pending_primary:
-            done, pending_primary = await asyncio.wait(
-                pending_primary,
-                timeout=0.05,  # 50ms poll interval
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-
-            # Collect completed primary
-            for task in done:
-                sample_id = primary_tasks[task]
-                try:
-                    result = await task
-                    primary_results.append((sample_id, result))
-                except Exception as e:
-                    primary_results.append((sample_id, None))
-
-            # Try launching secondary work
-            await self._try_launch_secondary(secondary_work_queue, secondary_inflight, config)
-
-            # Collect completed secondary
-            await self._collect_secondary(secondary_inflight, secondary_results, secondary_work_queue)
-
-        # ─────────────────────────────────────────────────────────────
-        # PHASE 2: Notify barrier (local primary done)
-        # ─────────────────────────────────────────────────────────────
-        await step_barrier.mark_primary_done.remote(step_id, worker_id)
-
-        # ─────────────────────────────────────────────────────────────
-        # PHASE 3: Keep filling until global done
-        # ─────────────────────────────────────────────────────────────
-        while not await step_barrier.is_done.remote(step_id):
-            await self._try_launch_secondary(secondary_work_queue, secondary_inflight, config)
-            await self._collect_secondary(secondary_inflight, secondary_results, secondary_work_queue)
-            await asyncio.sleep(0.05)
-
-        # ─────────────────────────────────────────────────────────────
-        # PHASE 4: Abort remaining secondary requests
-        # ─────────────────────────────────────────────────────────────
-        running_ids = [
-            server_request_id
-            for sample_id, (task, server_request_id) in secondary_inflight.items()
-            if not task.done()
-        ]
-
-        if running_ids:
-            await self.server_manager.abort_requests(running_ids)
-
-        # Collect final secondary results (aborted)
-        await self._collect_secondary(secondary_inflight, secondary_results, secondary_work_queue, wait_all=True)
-
-        return WorkerRunaheadResult(
-            primary_results=primary_results,
-            secondary_results=secondary_results,
-        )
-
-    async def _try_launch_secondary(
-        self,
-        secondary_work_queue,
-        secondary_inflight: dict,
-        config: RunaheadConfig,
-    ):
-        """Launch secondary tasks up to concurrency limit."""
-        while len(secondary_inflight) < config.max_secondary_concurrent:
-            item = await secondary_work_queue.get_work.remote()
-            if item is None:
-                break
-
-            # Apply token cap
-            max_tokens = min(item.max_tokens, config.max_secondary_tokens)
-
-            task = asyncio.create_task(
-                self.server_manager.generate_secondary(
-                    sample_id=item.sample_id,
-                    prompt_ids=item.prompt_ids,
-                    sampling_params={"max_tokens": max_tokens, ...},
-                )
-            )
-
-            # Track for abort
-            server_request_id = self.server_manager._pending_request_id  # Set by generate_secondary
-            secondary_inflight[item.sample_id] = (task, server_request_id, item)
-
-    async def _collect_secondary(
-        self,
-        secondary_inflight: dict,
-        secondary_results: list,
-        secondary_work_queue,
-        wait_all: bool = False,
-    ):
-        """Collect completed secondary results."""
-        if wait_all:
-            for sample_id, (task, _, item) in list(secondary_inflight.items()):
-                try:
-                    result = await task
-                    secondary_results.append(result)
-                    await secondary_work_queue.submit_result.remote(sample_id, result)
-                except Exception:
-                    pass
-            secondary_inflight.clear()
-        else:
-            completed = [
-                sid for sid, (task, _, _) in secondary_inflight.items()
-                if task.done()
-            ]
-            for sample_id in completed:
-                task, _, item = secondary_inflight.pop(sample_id)
-                try:
-                    result = await task
-                    if result.status == "rejected":
-                        # Requeue for retry
-                        await secondary_work_queue.requeue.remote(item)
-                    else:
-                        secondary_results.append(result)
-                        await secondary_work_queue.submit_result.remote(sample_id, result)
-                except Exception:
-                    pass
-```
+Key behaviors:
+- Polls every ~50ms to check for completed primary and available slack
+- Pulls secondary work from shared `SecondaryWorkQueue`
+- Tracks `sample_id → (task, server_request_id)` for targeted abort
+- Requeues rejected secondary for retry (up to `max_retries`)
 
 ### 5. Server-Side Admission
 
-Changes to vLLMHttpServer:
+#### Current Prototype: Ray Wrapper Pattern
 
-```python
-# In vLLMHttpServer
+See `test_vllm_runahead_server_side_admission_prototype.py` for reference implementation.
 
-def __init__(self, ...):
-    # ... existing init ...
+The prototype implements admission as a **Ray actor wrapper** (`AdmissionControlledServer`)
+around the vLLM server, avoiding Verl library modifications:
 
-    # Runahead tracking (GLOBAL TRUTH)
-    self.in_flight_total: int = 0
-    self.in_flight_secondary: int = 0
-    self.runahead_config: Optional[RunaheadConfig] = None
+- **Global counters**: `runahead_inflight` shared across all workers using this actor
+- **Admission logic**: Check `max_runahead_inflight` limit + optional workload metrics (waiting queue, KV cache)
+- **Request kind**: Pops `sampling_params["_verl_request_kind"]` before forwarding to vLLM
+- **Rejection**: Returns `TokenOutput(stop_reason="rejected")` when capacity full
 
-    # Metrics
-    self.secondary_accepted: int = 0
-    self.secondary_rejected: int = 0
+> **Multi-Worker Race Condition Note**: This approach only fixes multi-worker races
+> if all workers share the **same named/detached admission gate actor per server**.
+> If each worker instantiates its own wrapper, you're back to per-worker local
+> counters and races. Always use `name=f"admission_gate_{server_idx}"` when creating
+> the wrapper actors.
 
-def should_admit_secondary(self) -> bool:
-    """Server-side admission control."""
-    if not self.runahead_config:
-        return True
+#### Intended End-State: Headroom-Based Admission in vLLM Server
 
-    cfg = self.runahead_config
+The long-term design moves admission logic **inside the vLLM server** for tighter
+scheduler integration:
 
-    # Rule 1: Secondary capacity limit
-    secondary_cap = int(self.max_num_seqs * cfg.secondary_frac)
-    if self.in_flight_secondary >= secondary_cap:
-        return False
+- **Rule 1 - Secondary capacity**: `in_flight_secondary < max_num_seqs * secondary_frac`
+- **Rule 2 - Primary headroom**: `(max_num_seqs - in_flight_total) > primary_headroom`
 
-    # Rule 2: Primary headroom
-    available = self.max_num_seqs - self.in_flight_total
-    if available <= cfg.primary_headroom:
-        return False
-
-    return True
-
-async def generate(self, request_id, prompt_ids, sampling_params, meta=None):
-    kind = (meta or {}).get("kind", "primary")
-
-    # Server-side admission for secondary
-    if kind == "secondary":
-        if not self.should_admit_secondary():
-            self.secondary_rejected += 1
-            return TokenOutput(token_ids=[], stop_reason="rejected")
-
-        self.secondary_accepted += 1
-        self.in_flight_secondary += 1
-
-    self.in_flight_total += 1
-
-    try:
-        return await self._do_generate(request_id, prompt_ids, sampling_params)
-    finally:
-        self.in_flight_total -= 1
-        if kind == "secondary":
-            self.in_flight_secondary -= 1
-
-async def abort_requests(self, request_ids: list[str]) -> dict:
-    """Batch abort by request ID."""
-    aborted = 0
-    for rid in request_ids:
-        if await self._abort_single(rid):
-            aborted += 1
-    return {"aborted_count": aborted, "request_ids": request_ids}
-```
+**Why headroom-based is better:**
+- Integrated with vLLM scheduler (can check actual KV cache, waiting queue)
+- No extra Ray actor hop per request
+- Natural integration with vLLM priority scheduling (future)
 
 ---
 
