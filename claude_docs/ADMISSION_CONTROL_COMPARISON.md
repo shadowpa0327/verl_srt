@@ -142,6 +142,23 @@ Server-Side Admission doesn't track backpressure because rejections happen at th
 - **Single-worker scenarios:** Either approach works similarly
 - **Multi-worker scenarios:** **Server-Side Admission required** to prevent racing issue
 
+## Future Enhancement: Capacity-Based Admission
+
+The current Server-Side Admission uses a **fixed** `max_runahead_inflight` limit, which can cause **under-subscription** when multiple workers have slack simultaneously.
+
+A proposed enhancement uses **dynamic capacity calculation**:
+
+```python
+available_runahead = max_server_capacity - current_load - reserved_for_primary
+```
+
+This allows the system to:
+- Admit more runahead when server is idle
+- Restrict runahead when server is busy
+- Reserve capacity for incoming primary requests
+
+See `claude_docs/CAPACITY_BASED_ADMISSION_DESIGN.md` for full design.
+
 ## How to Run Benchmarks
 
 ```bash
