@@ -336,9 +336,7 @@ See `test_vllm_runahead_server_side_admission_prototype.py` for reference implem
 ## References
 
 ### Test Files (Prototypes)
-- `tests/workers/rollout/rollout_vllm/test_vllm_runahead_targeted_abort.py` - V1 targeted abort
-- `tests/workers/rollout/rollout_vllm/test_vllm_runahead_mvp.py` - V1 4-phase + StepBarrier
-- `tests/workers/rollout/rollout_vllm/test_vllm_runahead_agentloop_standalone.py` - AgentLoop integration
+- `tests/workers/rollout/rollout_vllm/test_vllm_runahead_agentloop_standalone.py` - AgentLoop integration prototype
 - `tests/workers/rollout/rollout_vllm/test_vllm_runahead_server_side_admission_prototype.py` - **V3.1 server-side admission (current)**
 - `tests/workers/rollout/rollout_vllm/test_vllm_runahead_slack_filling.py` - Continuous slack-filling pattern
 
