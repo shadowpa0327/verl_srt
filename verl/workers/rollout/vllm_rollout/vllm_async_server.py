@@ -344,10 +344,15 @@ class vLLMHttpServerBase:
             args.update({"enable_return_routed_experts": True})
 
         server_args = ["serve", self.model_config.local_path]
+        # Boolean flags that need explicit --no-<flag> to disable
+        explicit_bool_flags = {"enable_prefix_caching"}
         for k, v in args.items():
             if isinstance(v, bool):
                 if v:
                     server_args.append(f"--{k}")
+                elif k in explicit_bool_flags:
+                    # Add explicit --no-<flag> for flags that default to True in vLLM
+                    server_args.append(f"--no-{k}")
             elif v is not None:
                 server_args.append(f"--{k}")
                 # Use json.dumps for dict to ensure valid JSON format

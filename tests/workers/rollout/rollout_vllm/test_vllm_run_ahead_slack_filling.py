@@ -60,7 +60,7 @@ class SlackFillingConfig:
     """Configuration for slack-filling runahead.
 
     Backpressure rule: only submit runahead if:
-        num_requests_waiting <= waiting_threshold (W)
+        (num_requests_running + num_requests_waiting) <= load_threshold
         AND kv_cache_usage <= kv_cache_threshold (K)
 
     Budget rule: max budget_per_server runahead requests in-flight per server.
@@ -71,7 +71,7 @@ class SlackFillingConfig:
     """
 
     # Backpressure thresholds
-    waiting_threshold: int = 0  # W: only submit if num_requests_waiting <= W
+    load_threshold: int = 32  # max (running + waiting) to consider slack
     kv_cache_threshold: float = 0.85  # K: only submit if kv_cache_usage <= K
 
     # Budget limits (per-worker, not global)
@@ -123,7 +123,7 @@ class WorkloadSnapshot:
         if self.error:
             return False
         return (
-            self.num_requests_waiting <= config.waiting_threshold
+            self.total_load <= config.load_threshold
             and self.kv_cache_usage <= config.kv_cache_threshold
         )
 
