@@ -306,6 +306,23 @@ result.metrics           # Observability
 
 ---
 
+## V3.1: API Pattern Updates (Superseded Patterns)
+
+These patterns from V3 have been superseded based on prototype implementation experience.
+See `test_vllm_runahead_server_side_admission_prototype.py` for reference implementation.
+
+| Pattern | Original (V3) | Current (Prototype) | Why Changed |
+|---------|---------------|---------------------|-------------|
+| Request kind | `meta={"kind": "secondary"}` param | `sampling_params["_verl_request_kind"]` | Avoids modifying vLLM server signature; wrapper pops key before forwarding |
+| Abort | Batch `abort_requests([ids])` on server | Per-id `abort_request(id)` with manager-side grouping | vLLM exposes per-request abort, not batch |
+| Admission location | Inside vLLMHttpServer | Ray actor wrapper (`AdmissionControlledServer`) | Avoids Verl library modifications; headroom-based inside vLLM is end-state |
+
+> **Critical note:** The wrapper pattern only fixes multi-worker races if all workers share
+> the **same named/detached admission gate actor per server**. If each worker instantiates
+> its own wrapper, you're back to per-worker local counters and races.
+
+---
+
 ## Key Lessons Learned
 
 1. **Start simple**: Completion-based trigger is fine for V1
@@ -322,6 +339,8 @@ result.metrics           # Observability
 - `tests/workers/rollout/rollout_vllm/test_vllm_runahead_targeted_abort.py` - V1 targeted abort
 - `tests/workers/rollout/rollout_vllm/test_vllm_runahead_mvp.py` - V1 4-phase + StepBarrier
 - `tests/workers/rollout/rollout_vllm/test_vllm_runahead_agentloop_standalone.py` - AgentLoop integration
+- `tests/workers/rollout/rollout_vllm/test_vllm_runahead_server_side_admission_prototype.py` - **V3.1 server-side admission (current)**
+- `tests/workers/rollout/rollout_vllm/test_vllm_runahead_slack_filling.py` - Continuous slack-filling pattern
 
 ### Implementation
 - `verl/experimental/agent_loop/runahead.py` - V0 implementation (needs update)

@@ -28,8 +28,8 @@ from uuid import uuid4
 
 def test_vllm_abort():
     # ==================== Configuration ====================
-    MODEL_PATH = os.path.expanduser("~/models/Qwen/Qwen2.5-1.5B-Instruct")  # /root/models/Qwen/Qwen2.5-1.5B-Instruct
-    GPUS_PER_NODE = 2
+    MODEL_PATH = os.path.expanduser("Qwen/Qwen2.5-1.5B-Instruct")  # /root/models/Qwen/Qwen2.5-1.5B-Instruct
+    GPUS_PER_NODE = 1
     TP_SIZE = 1
     ROLLOUT_NAME = "vllm"
     ABORT_DELAY = 0.5  # seconds to wait before aborting
