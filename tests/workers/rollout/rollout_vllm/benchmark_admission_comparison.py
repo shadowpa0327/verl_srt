@@ -113,6 +113,20 @@ class RunMetrics:
 
 
 @dataclass
+class MultiWorkerMetrics:
+    """Metrics from multi-worker racing test."""
+    num_workers: int = 0
+    total_time: float = 0.0
+    max_observed_inflight: int = 0      # Peak concurrent runahead at server
+    racing_violations: int = 0           # Times exceeded budget_per_server
+    total_runahead_submitted: int = 0
+    total_runahead_completed: int = 0
+    total_runahead_rejected: int = 0
+    budget_per_server: int = 0
+    inflight_samples: List[int] = field(default_factory=list)  # Time series of inflight counts
+
+
+@dataclass
 class ComparisonResult:
     """Result of a single comparison (baseline + slack + server)."""
     experiment_id: str
@@ -575,6 +589,451 @@ class AdmissionComparisonBenchmark:
 
 
 # =============================================================================
+# Multi-Worker Racing Test
+# =============================================================================
+
+@ray.remote
+class RuanaheadWorker:
+    """Ray actor that runs runahead workload for multi-worker testing."""
+
+    def __init__(self, worker_id: int, server_handles: list, config, tokenizer_path: str):
+        self.worker_id = worker_id
+        self.server_handles = server_handles
+        self.config = config
+        self.tokenizer_path = tokenizer_path
+        self._tokenizer = None
+
+    def _get_tokenizer(self):
+        if self._tokenizer is None:
+            from transformers import AutoTokenizer
+            self._tokenizer = AutoTokenizer.from_pretrained(self.tokenizer_path)
+        return self._tokenizer
+
+    async def run_slack_detection(
+        self,
+        runahead_prompts: list,
+        slack_config_dict: dict,
+    ) -> dict:
+        """Run runahead with slack detection (client-side budget)."""
+        from test_vllm_run_ahead_slack_filling import (
+            SlackFillingConfig,
+            SlackFillingServerManager,
+            BatchTracker,
+            RequestTracker,
+        )
+
+        slack_config = SlackFillingConfig(**slack_config_dict)
+        sm = SlackFillingServerManager(self.config, self.server_handles, slack_config)
+        tokenizer = self._get_tokenizer()
+
+        tracker = BatchTracker(batch_id=f"runahead_w{self.worker_id}", total=len(runahead_prompts))
+        tasks = set()
+        submitted = 0
+        completed = 0
+        rejected = 0
+
+        for i, item in enumerate(runahead_prompts):
+            rid = f"w{self.worker_id}_{item['request_id']}"
+            tr = RequestTracker(
+                request_id=rid,
+                batch_id=f"runahead_w{self.worker_id}",
+                index=i,
+                max_tokens=item["max_tokens"],
+            )
+            tracker.requests[rid] = tr
+
+            messages = [{"role": "user", "content": item["prompt"]}]
+            prompt_ids = tokenizer.apply_chat_template(
+                messages, add_generation_prompt=True, tokenize=True
+            )
+            sampling_params = {
+                "temperature": 1.0,
+                "top_p": 1.0,
+                "max_tokens": item["max_tokens"],
+            }
+
+            task = asyncio.create_task(
+                sm.generate(
+                    request_id=rid,
+                    prompt_ids=prompt_ids,
+                    sampling_params=sampling_params,
+                    tracker=tr,
+                    kind="runahead",
+                    sticky=False,
+                )
+            )
+            tasks.add(task)
+            submitted += 1
+
+        while tasks:
+            done, tasks = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for t in done:
+                try:
+                    await t
+                    completed += 1
+                except Exception:
+                    rejected += 1
+
+        return {
+            "worker_id": self.worker_id,
+            "submitted": submitted,
+            "completed": completed,
+            "rejected": rejected,
+        }
+
+    async def run_server_admission(
+        self,
+        runahead_prompts: list,
+        gated_handles: list,
+        admission_config_dict: dict,
+    ) -> dict:
+        """Run runahead with server-side admission (global lock)."""
+        from test_vllm_run_ahead_server_side_admission import (
+            AdmissionGateConfig,
+            ServerSideAdmissionServerManager,
+            BatchTracker,
+            RequestTracker,
+        )
+
+        admission_config = AdmissionGateConfig(**admission_config_dict)
+        sm = ServerSideAdmissionServerManager(
+            config=self.config,
+            gated_handles=gated_handles,
+            admission_config=admission_config,
+        )
+        tokenizer = self._get_tokenizer()
+
+        tracker = BatchTracker(batch_id=f"runahead_w{self.worker_id}", total=len(runahead_prompts))
+        tasks = set()
+        submitted = 0
+        completed = 0
+        rejected = 0
+
+        for i, item in enumerate(runahead_prompts):
+            rid = f"w{self.worker_id}_{item['request_id']}"
+            tr = RequestTracker(
+                request_id=rid,
+                batch_id=f"runahead_w{self.worker_id}",
+                index=i,
+                max_tokens=item["max_tokens"],
+            )
+            tracker.requests[rid] = tr
+
+            messages = [{"role": "user", "content": item["prompt"]}]
+            prompt_ids = tokenizer.apply_chat_template(
+                messages, add_generation_prompt=True, tokenize=True
+            )
+            sampling_params = {
+                "temperature": 1.0,
+                "top_p": 1.0,
+                "max_tokens": item["max_tokens"],
+            }
+
+            task = asyncio.create_task(
+                sm.generate(
+                    request_id=rid,
+                    prompt_ids=prompt_ids,
+                    sampling_params=sampling_params,
+                    tracker=tr,
+                    kind="runahead",
+                )
+            )
+            tasks.add(task)
+            submitted += 1
+
+        while tasks:
+            done, tasks = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for t in done:
+                try:
+                    await t
+                    completed += 1
+                except Exception:
+                    rejected += 1
+
+        return {
+            "worker_id": self.worker_id,
+            "submitted": submitted,
+            "completed": completed,
+            "rejected": rejected + sm.runahead_rejected,
+        }
+
+
+@ray.remote
+class InflightMonitor:
+    """Ray actor that samples inflight counts from admission gates."""
+
+    def __init__(self, gated_handles: list, sample_interval: float = 0.1):
+        self.gated_handles = gated_handles
+        self.sample_interval = sample_interval
+        self.samples = []
+        self.max_observed = 0
+        self._running = False
+
+    async def start_monitoring(self):
+        """Start sampling inflight counts in background."""
+        self._running = True
+        while self._running:
+            total_inflight = 0
+            for gate in self.gated_handles:
+                try:
+                    stats = await gate.get_admission_stats.remote()
+                    total_inflight += stats.get("runahead_inflight", 0)
+                except Exception:
+                    pass
+            self.samples.append(total_inflight)
+            if total_inflight > self.max_observed:
+                self.max_observed = total_inflight
+            await asyncio.sleep(self.sample_interval)
+
+    def stop_monitoring(self):
+        """Stop the monitoring loop."""
+        self._running = False
+
+    def get_results(self) -> dict:
+        """Get monitoring results."""
+        return {
+            "samples": self.samples,
+            "max_observed": self.max_observed,
+            "num_samples": len(self.samples),
+        }
+
+
+class MultiWorkerBenchmark:
+    """Runs multi-worker racing test to compare admission strategies."""
+
+    def __init__(self, base_benchmark: AdmissionComparisonBenchmark, num_workers: int):
+        self.base = base_benchmark
+        self.num_workers = num_workers
+
+    async def run_multi_worker_slack(
+        self,
+        runahead_prompts: list,
+        slack_config_dict: dict,
+    ) -> MultiWorkerMetrics:
+        """Run N workers with slack detection (client-side budget)."""
+        print(f"\n   Running SLACK DETECTION with {self.num_workers} workers...")
+
+        # Create worker actors
+        workers = []
+        for i in range(self.num_workers):
+            worker = RuanaheadWorker.remote(
+                worker_id=i,
+                server_handles=self.base.server_handles,
+                config=self.base.trainer_config,
+                tokenizer_path=self.base.exp_config.model_path,
+            )
+            workers.append(worker)
+
+        # Split workload across workers
+        prompts_per_worker = len(runahead_prompts) // self.num_workers
+        worker_prompts = []
+        for i in range(self.num_workers):
+            start = i * prompts_per_worker
+            end = start + prompts_per_worker if i < self.num_workers - 1 else len(runahead_prompts)
+            worker_prompts.append(runahead_prompts[start:end])
+
+        # Run all workers concurrently
+        start_time = time.perf_counter()
+        tasks = [
+            workers[i].run_slack_detection.remote(worker_prompts[i], slack_config_dict)
+            for i in range(self.num_workers)
+        ]
+        results = ray.get(tasks)
+        end_time = time.perf_counter()
+
+        # Aggregate results
+        total_submitted = sum(r["submitted"] for r in results)
+        total_completed = sum(r["completed"] for r in results)
+        total_rejected = sum(r["rejected"] for r in results)
+
+        # For slack detection, we can't directly measure inflight at server
+        # because there's no global counter. We use the budget as max possible.
+        max_possible = self.num_workers * slack_config_dict["budget_per_server"]
+
+        return MultiWorkerMetrics(
+            num_workers=self.num_workers,
+            total_time=end_time - start_time,
+            max_observed_inflight=max_possible,  # Theoretical max (no global tracking)
+            racing_violations=0,  # Can't detect without server-side counter
+            total_runahead_submitted=total_submitted,
+            total_runahead_completed=total_completed,
+            total_runahead_rejected=total_rejected,
+            budget_per_server=slack_config_dict["budget_per_server"],
+        )
+
+    async def run_multi_worker_server(
+        self,
+        runahead_prompts: list,
+        admission_config_dict: dict,
+    ) -> MultiWorkerMetrics:
+        """Run N workers with server-side admission (global lock)."""
+        print(f"\n   Running SERVER-SIDE ADMISSION with {self.num_workers} workers...")
+
+        # Create admission gates via registry (shared across all workers)
+        registry = get_or_create_registry()
+
+        async def create_gates():
+            from test_vllm_run_ahead_server_side_admission import AdmissionGateConfig
+            config = AdmissionGateConfig(**admission_config_dict)
+            gates = []
+            for i, h in enumerate(self.base.server_handles):
+                gate = await registry.get_or_create.remote(i, h, config)
+                gates.append(gate)
+            return gates
+
+        gated_handles = await create_gates()
+
+        # Create inflight monitor
+        monitor = InflightMonitor.remote(gated_handles, sample_interval=0.05)
+        monitor_task = monitor.start_monitoring.remote()
+
+        # Create worker actors
+        workers = []
+        for i in range(self.num_workers):
+            worker = RuanaheadWorker.remote(
+                worker_id=i,
+                server_handles=self.base.server_handles,
+                config=self.base.trainer_config,
+                tokenizer_path=self.base.exp_config.model_path,
+            )
+            workers.append(worker)
+
+        # Split workload across workers
+        prompts_per_worker = len(runahead_prompts) // self.num_workers
+        worker_prompts = []
+        for i in range(self.num_workers):
+            start = i * prompts_per_worker
+            end = start + prompts_per_worker if i < self.num_workers - 1 else len(runahead_prompts)
+            worker_prompts.append(runahead_prompts[start:end])
+
+        # Run all workers concurrently
+        start_time = time.perf_counter()
+        tasks = [
+            workers[i].run_server_admission.remote(
+                worker_prompts[i], gated_handles, admission_config_dict
+            )
+            for i in range(self.num_workers)
+        ]
+        results = ray.get(tasks)
+        end_time = time.perf_counter()
+
+        # Stop monitor and get results
+        ray.get(monitor.stop_monitoring.remote())
+        await asyncio.sleep(0.1)  # Let monitor finish
+        monitor_results = ray.get(monitor.get_results.remote())
+
+        # Aggregate results
+        total_submitted = sum(r["submitted"] for r in results)
+        total_completed = sum(r["completed"] for r in results)
+        total_rejected = sum(r["rejected"] for r in results)
+
+        # Count racing violations (times inflight exceeded total budget across all servers)
+        budget_per_server = admission_config_dict["max_runahead_inflight"]
+        num_servers = len(self.base.server_handles)
+        total_budget = budget_per_server * num_servers  # e.g., 2 servers × 2 budget = 4 total
+        samples = monitor_results["samples"]
+        racing_violations = sum(1 for s in samples if s > total_budget)
+
+        return MultiWorkerMetrics(
+            num_workers=self.num_workers,
+            total_time=end_time - start_time,
+            max_observed_inflight=monitor_results["max_observed"],
+            racing_violations=racing_violations,
+            total_runahead_submitted=total_submitted,
+            total_runahead_completed=total_completed,
+            total_runahead_rejected=total_rejected,
+            budget_per_server=budget_per_server,
+            inflight_samples=samples,
+        )
+
+    def run_comparison(self) -> tuple:
+        """Run multi-worker comparison between slack and server-side."""
+        print(f"\n{'='*80}")
+        print(f"MULTI-WORKER RACING TEST (N={self.num_workers} workers)")
+        print(f"{'='*80}")
+
+        # Generate runahead workload (more prompts for multi-worker)
+        runahead_prompts = generate_workload(
+            size=self.num_workers * 8,  # 8 requests per worker
+            long_tail_ratio=0.0,  # All short for faster testing
+            short_max_tokens=256,  # Short tokens for faster testing
+            long_max_tokens=256,
+            prefix="mw_runahead",
+        )
+
+        print(f"   Workload: {len(runahead_prompts)} requests, {len(runahead_prompts)//self.num_workers} per worker")
+
+        # Config for slack detection
+        slack_config_dict = {
+            "budget_per_server": self.base.exp_config.budget_per_server,
+            "load_threshold": self.base.exp_config.load_threshold,
+            "kv_cache_threshold": self.base.exp_config.kv_cache_threshold,
+            "poll_interval_s": self.base.exp_config.poll_interval_s,
+        }
+
+        # Config for server-side admission
+        admission_config_dict = {
+            "max_runahead_inflight": self.base.exp_config.budget_per_server,
+            "enforce_slack": False,  # Disable slack check for pure racing test
+            "load_threshold": self.base.exp_config.load_threshold,
+            "kv_cache_threshold": self.base.exp_config.kv_cache_threshold,
+            "poll_interval_s": self.base.exp_config.poll_interval_s,
+            "max_runahead_retries": 3,
+        }
+
+        # Run slack detection
+        slack_metrics = asyncio.run(
+            self.run_multi_worker_slack(runahead_prompts, slack_config_dict)
+        )
+
+        # Run server-side admission
+        server_metrics = asyncio.run(
+            self.run_multi_worker_server(runahead_prompts, admission_config_dict)
+        )
+
+        return slack_metrics, server_metrics
+
+
+def print_multi_worker_results(slack: MultiWorkerMetrics, server: MultiWorkerMetrics):
+    """Print multi-worker comparison results."""
+    print(f"\n{'='*80}")
+    print(f"MULTI-WORKER RACING TEST RESULTS (N={slack.num_workers} workers, budget={slack.budget_per_server})")
+    print(f"{'='*80}")
+
+    print(f"\n{'Metric':<30} {'Slack Detection':<20} {'Server-Side':<20}")
+    print("-" * 70)
+    print(f"{'Max Observed Inflight:':<30} {slack.max_observed_inflight:<20} {server.max_observed_inflight:<20}")
+    print(f"{'Racing Violations:':<30} {'N/A (no tracking)':<20} {server.racing_violations:<20}")
+    print(f"{'Runahead Submitted:':<30} {slack.total_runahead_submitted:<20} {server.total_runahead_submitted:<20}")
+    print(f"{'Runahead Completed:':<30} {slack.total_runahead_completed:<20} {server.total_runahead_completed:<20}")
+    print(f"{'Runahead Rejected:':<30} {slack.total_runahead_rejected:<20} {server.total_runahead_rejected:<20}")
+    print(f"{'Total Time:':<30} {slack.total_time:.2f}s{'':<14} {server.total_time:.2f}s")
+    print("-" * 70)
+
+    # Analysis
+    print("\n--- ANALYSIS ---")
+    theoretical_max = slack.num_workers * slack.budget_per_server
+    # Note: total budget = budget_per_server × num_servers (assume 2 servers based on typical setup)
+    num_servers = 2  # Typical DP setup
+    total_server_budget = server.budget_per_server * num_servers
+    print(f"Theoretical max inflight (Slack): {slack.num_workers} workers × {slack.budget_per_server} budget = {theoretical_max}")
+    print(f"Server-Side max observed: {server.max_observed_inflight} (total budget: {server.budget_per_server}/server × {num_servers} servers = {total_server_budget})")
+
+    if server.max_observed_inflight <= total_server_budget:
+        print("✓ Server-Side Admission maintained global limit (no racing)")
+    else:
+        print("✗ Server-Side Admission exceeded limit (unexpected)")
+
+    if server.racing_violations == 0:
+        print("✓ No racing violations detected for Server-Side")
+    else:
+        print(f"✗ {server.racing_violations} racing violations detected")
+
+    print(f"\nNote: Slack Detection has no global tracking - each worker has independent budget.")
+    print(f"      With {slack.num_workers} workers, up to {theoretical_max} concurrent requests are possible.")
+
+
+# =============================================================================
 # Results Output
 # =============================================================================
 
@@ -660,6 +1119,48 @@ def save_results(results: list, output_dir: str = "results"):
     return filename
 
 
+def save_multi_worker_results(slack: MultiWorkerMetrics, server: MultiWorkerMetrics, output_dir: str = "results"):
+    """Save multi-worker results to JSON file."""
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"{output_dir}/multi_worker_racing_{timestamp}.json"
+
+    data = {
+        "timestamp": timestamp,
+        "test_type": "multi_worker_racing",
+        "num_workers": slack.num_workers,
+        "budget_per_server": slack.budget_per_server,
+        "slack_detection": {
+            "max_observed_inflight": slack.max_observed_inflight,
+            "racing_violations": slack.racing_violations,
+            "total_runahead_submitted": slack.total_runahead_submitted,
+            "total_runahead_completed": slack.total_runahead_completed,
+            "total_runahead_rejected": slack.total_runahead_rejected,
+            "total_time": slack.total_time,
+        },
+        "server_admission": {
+            "max_observed_inflight": server.max_observed_inflight,
+            "racing_violations": server.racing_violations,
+            "total_runahead_submitted": server.total_runahead_submitted,
+            "total_runahead_completed": server.total_runahead_completed,
+            "total_runahead_rejected": server.total_runahead_rejected,
+            "total_time": server.total_time,
+            "inflight_samples": server.inflight_samples,
+        },
+        "analysis": {
+            "theoretical_max_slack": slack.num_workers * slack.budget_per_server,
+            "server_within_limit": server.max_observed_inflight <= server.budget_per_server,
+        }
+    }
+
+    with open(filename, "w") as f:
+        json.dump(data, f, indent=2)
+
+    print(f"\nResults saved to: {filename}")
+    return filename
+
+
 def run_experiment_matrix(benchmark: AdmissionComparisonBenchmark, num_rounds: int = 1) -> list:
     """Run full experiment matrix."""
     primary_sizes = [16, 32]
@@ -699,6 +1200,8 @@ def main():
     parser.add_argument("--single", action="store_true", help="Run single config from env vars")
     parser.add_argument("--rounds", type=int, default=1, help="Number of rounds (default: 1)")
     parser.add_argument("--output-dir", default="results", help="Output directory")
+    parser.add_argument("--multi-worker", type=int, default=0,
+                        help="Run multi-worker racing test with N workers (default: 0 = disabled)")
     args = parser.parse_args()
 
     exp_config = ExperimentConfig(
@@ -721,14 +1224,22 @@ def main():
     try:
         benchmark.setup()
 
-        if args.single:
+        if args.multi_worker > 0:
+            # Run multi-worker racing test
+            mw_benchmark = MultiWorkerBenchmark(benchmark, args.multi_worker)
+            slack_metrics, server_metrics = mw_benchmark.run_comparison()
+            print_multi_worker_results(slack_metrics, server_metrics)
+            # Save multi-worker results
+            save_multi_worker_results(slack_metrics, server_metrics, args.output_dir)
+        elif args.single:
             result = benchmark.run_single_comparison()
             results = [result]
+            print_summary_table(results)
+            save_results(results, args.output_dir)
         else:
             results = run_experiment_matrix(benchmark, num_rounds=args.rounds)
-
-        print_summary_table(results)
-        save_results(results, args.output_dir)
+            print_summary_table(results)
+            save_results(results, args.output_dir)
 
     finally:
         benchmark.teardown()
