@@ -756,3 +756,195 @@ verl/workers/rollout/vllm_rollout/
 2. **Targeted abort only**: Never `abort_all_requests()` in multi-worker
 3. **Server is truth**: Global capacity tracked in server, not workers
 4. **Bounded**: Max concurrent, max tokens, max retries all capped
+
+---
+
+## Slack-Filling Submission Logic
+
+This section details the continuous slack-filling approach implemented in
+`test_vllm_runahead_slack_filling.py`.
+
+### Submission Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        SLACK-FILLING RUNAHEAD LOGIC                         │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+                    ┌──────────────────────┐
+                    │  START: Primary Batch │
+                    │  (all submitted       │
+                    │   immediately)        │
+                    └──────────┬───────────┘
+                               │
+                               ▼
+              ┌────────────────────────────────┐
+              │  MAIN LOOP (while primary_tasks)│
+              │  Poll interval: 100ms + jitter  │
+              └────────────────┬───────────────┘
+                               │
+          ┌────────────────────┼────────────────────┐
+          │                    │                    │
+          ▼                    ▼                    ▼
+   ┌─────────────┐    ┌──────────────┐    ┌───────────────────┐
+   │ Collect     │    │ Collect done │    │ FEEDER TICK:      │
+   │ completed   │    │ runahead     │    │ maybe_submit_     │
+   │ primary     │    │ (non-block)  │    │ runahead()        │
+   └─────────────┘    └──────────────┘    └─────────┬─────────┘
+                                                    │
+                                                    ▼
+                               ┌────────────────────────────────┐
+                               │  Query server workloads        │
+                               │  (cached for 300ms + jitter)   │
+                               └────────────────┬───────────────┘
+                                                │
+                                                ▼
+                      ┌─────────────────────────────────────────┐
+                      │  FOR EACH SERVER: Check slack condition │
+                      └─────────────────────┬───────────────────┘
+                                            │
+                    ┌───────────────────────┴───────────────────────┐
+                    │                                               │
+                    ▼                                               ▼
+        ┌───────────────────────┐                    ┌──────────────────────┐
+        │  HAS SLACK?           │                    │  NO SLACK            │
+        │  ─────────────────    │                    │  (backpressure)      │
+        │  total_load <= 32     │                    │                      │
+        │  AND                  │                    │  Skip this server    │
+        │  kv_cache <= 85%      │                    │  ++backpressure_     │
+        │  AND                  │                    │    events            │
+        │  runahead_inflight    │                    └──────────────────────┘
+        │    < budget (1)       │
+        └───────────┬───────────┘
+                    │ YES
+                    ▼
+        ┌───────────────────────┐
+        │  SUBMIT 1 RUNAHEAD    │
+        │  to this server       │
+        │  (preferred_server_   │
+        │   idx = server_idx)   │
+        └───────────────────────┘
+```
+
+### Slack Condition Detail
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    SLACK CHECK (per server)                      │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│   Server has slack if ALL conditions are true:                   │
+│                                                                  │
+│   1. total_load = (running + waiting) <= load_threshold (32)     │
+│      └── "Is the server busy?"                                   │
+│                                                                  │
+│   2. kv_cache_usage <= kv_cache_threshold (85%)                  │
+│      └── "Does the server have memory?"                          │
+│                                                                  │
+│   3. runahead_inflight[server] < budget_per_server (1)           │
+│      └── "Have we already sent runahead to this server?"         │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Configuration Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `load_threshold` | 32 | Max (running + waiting) to consider server has slack |
+| `kv_cache_threshold` | 0.85 | Max KV cache usage (85%) |
+| `budget_per_server` | 1 | Max runahead in-flight per server per worker |
+| `poll_interval_s` | 0.1 | How often to check slack (100ms) |
+| `poll_jitter_s` | 0.03 | Random jitter to reduce herding (0-30ms) |
+| `workload_cache_ttl_s` | 0.3 | Cache workload queries (300ms) |
+
+### Timeline Example (2 servers, budget=1)
+
+```
+Time ──────────────────────────────────────────────────────────────────────────►
+
+                    load_threshold = 32, budget_per_server = 1
+
+SERVER 0:  ═══════════════════════════════════════════════════════════════════
+           │ P0 ████████████████████████████████████████│
+           │ P1 ██████████████████████│                 │
+           │ P2 █████████████│                          │
+           │ P3 ██████████████████████████████████████████████████████│ (LONG)
+           │                                            │
+           │    load=4  load=3  load=2  load=1  load=1  │
+
+SERVER 1:  ═══════════════════════════════════════════════════════════════════
+           │ P4 ████████████████████████████████████████│
+           │ P5 ████████████████████│                   │
+           │ P6 █████████████████│                      │
+           │ P7 █████████████████████████████████████████████████████████│ (LONG)
+           │                                            │
+           │    load=4  load=3  load=2  load=1  load=1  │
+
+RUNAHEAD:  ═══════════════════════════════════════════════════════════════════
+           │                                            │
+           │  No slack (load > 32? No, but budget=1)    │
+           │                                            │
+           t=0                                          │
+           │                                            │
+           │         ┌── P2 completes, Server 0: load=3 │
+           │         │   Slack check: load=3 <= 32 ✓    │
+           │         │   kv_cache < 85% ✓               │
+           │         │   runahead_inflight[0] = 0 < 1 ✓ │
+           │         │   → Submit R0 to Server 0        │
+           │         ▼                                  │
+           │         R0 ████████████████████████████████████│ (completed)
+           │                                            │
+           │              ┌── P6 completes, Server 1    │
+           │              │   → Submit R1 to Server 1   │
+           │              ▼                             │
+           │              R1 ███████████████████████████████████│ (completed)
+           │                                            │
+           │                   ┌── P1/P5 complete       │
+           │                   │   But R0/R1 still running
+           │                   │   runahead_inflight = 1
+           │                   │   Budget exhausted! ✗  │
+           │                   │   (backpressure event) │
+           │                   │                        │
+           │                        ┌── R0 completes    │
+           │                        │   runahead_inflight[0] = 0
+           │                        │   → Submit R2 to Server 0
+           │                        ▼                   │
+           │                        R2 █████████████████│ (aborted when P3 done)
+           │                                            │
+           │                                     ┌── P3 done (last primary)
+           │                                     │   PRIMARY COMPLETE!
+           │                                     │   Cancel remaining runahead
+           │                                     ▼
+           └─────────────────────────────────────────────────────────────────►
+                                                 t=end
+```
+
+### Key Timing Concepts
+
+| Phase | Timing | Description |
+|-------|--------|-------------|
+| **Primary Submission** | t=0 (immediate) | All primary requests submitted in parallel at start |
+| **Runahead Submission** | Continuous, opportunistic | Every 100ms poll + jitter, only when slack available |
+| **Runahead Cancellation** | When primary completes | All in-flight runahead cancelled, server abort called |
+
+### When Runahead Happens
+
+| Condition | Runahead Submitted? |
+|-----------|---------------------|
+| All primaries running, servers busy | No (no slack) |
+| Some primaries complete, server load drops | **Yes** (slack detected) |
+| Runahead already in-flight on server | No (budget exhausted) |
+| KV cache > 85% | No (memory pressure) |
+| Primary batch completes | Cancel all runahead |
+
+### Key Insight
+
+**Runahead fills the "bubbles"** created when short primary requests complete before long ones,
+utilizing otherwise idle GPU capacity. The continuous slack-filling approach (drip-feed) is more
+efficient than one-shot batch triggers because:
+
+1. Runahead starts as soon as ANY slack appears
+2. Backpressure stops feeding automatically when servers get busy
+3. Per-server budgets prevent overloading individual servers
+4. Safe cancellation ensures no orphaned requests
