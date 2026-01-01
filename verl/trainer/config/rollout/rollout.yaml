@@ -205,6 +205,10 @@ agent:
   # Number of agent loop workers
   num_workers: 8
 
+  # Use CentralRouter for request routing (single router for all workers)
+  # When False (default), each worker has its own AsyncLLMServerManager
+  use_central_router: False
+
   # default agent loop to use if `agent_name` not set in RL dataset
   default_agent_loop: single_turn_agent
 
