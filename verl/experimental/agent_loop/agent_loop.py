@@ -248,20 +248,28 @@ class AgentLoopWorkerBase:
     def __init__(
         self,
         config: DictConfig,
-        server_handles: list[ray.actor.ActorHandle],
+        router_or_handles,
         reward_router_address: str = None,
     ):
         """Initialize agent loop manager.
 
         Args:
             config (DictConfig): YAML config.
-            server_handles (List[ray.actor.ActorHandle]): OpenAI compatible LLM server actor handles.
+            router_or_handles: Either a CentralRouter Ray actor handle or a list of server handles.
         """
         self.config = config
 
         # for recipe to change
         if not hasattr(self, "server_manager"):
-            self.server_manager = AsyncLLMServerManager(config, server_handles)
+            # Check if we got a router or server handles
+            if isinstance(router_or_handles, list):
+                # Legacy path: per-worker AsyncLLMServerManager
+                self.server_manager = AsyncLLMServerManager(config, router_or_handles)
+            else:
+                # New path: central router with adapter
+                from verl.experimental.agent_loop.router import RouterAdapter
+
+                self.server_manager = RouterAdapter(router_or_handles)
 
         self.reward_router_address = reward_router_address
 
@@ -771,6 +779,16 @@ class AgentLoopManager:
 
         print(f"AgentLoopManager: {self.server_addresses}")
 
+        # Conditionally create central router based on config
+        self.use_central_router = self.config.actor_rollout_ref.rollout.agent.get("use_central_router", False)
+        if self.use_central_router:
+            from verl.experimental.agent_loop.router import CentralRouter
+
+            self.router = CentralRouter.remote(self.server_handles)
+            logger.info("AgentLoopManager: Using CentralRouter for request routing")
+        else:
+            self.router = None
+
         # Update Prometheus configuration with server addresses
         if rollout_config.prometheus.enable:
             if rollout_config.disable_log_stats:
@@ -780,6 +798,9 @@ class AgentLoopManager:
     def _init_agent_loop_workers(self):
         self.agent_loop_workers = []
         num_workers = self.config.actor_rollout_ref.rollout.agent.num_workers
+
+        # Pass router if using central router, otherwise pass server_handles
+        router_or_handles = self.router if self.use_central_router else self.server_handles
 
         node_ids = [node["NodeID"] for node in ray.nodes() if node["Alive"] and node["Resources"].get("CPU", 0) > 0]
         for i in range(num_workers):
@@ -791,7 +812,7 @@ class AgentLoopManager:
                     scheduling_strategy=ray.util.scheduling_strategies.NodeAffinitySchedulingStrategy(
                         node_id=node_id, soft=True
                     ),
-                ).remote(self.config, self.server_handles, self.reward_router_address)
+                ).remote(self.config, router_or_handles, self.reward_router_address)
             )
 
     def generate_sequences(self, prompts: DataProto) -> DataProto:
