@@ -12,19 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import asyncio
-import heapq
 import logging
 import os
-import random
 from abc import ABC, abstractmethod
 from typing import Any, Optional
-from uuid import uuid4
 
 import hydra
 import numpy as np
 import ray
 import torch
-from cachetools import LRUCache
 from omegaconf import DictConfig, OmegaConf
 from pydantic import BaseModel, ConfigDict
 from tensordict import TensorDict
@@ -49,72 +45,6 @@ from verl.workers.rollout.replica import TokenOutput, get_rollout_replica_class
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
-
-
-class AsyncLLMServerManager:
-    """
-    A class to manage multiple OpenAI compatible LLM servers. This class provides
-    - Load balance: least requests load balancing
-    - Sticky session: send multi-turn chat completions to same server for automatic prefix caching
-    """
-
-    def __init__(self, config: DictConfig, server_handles: list[ray.actor.ActorHandle], max_cache_size: int = 10000):
-        """Initialize the AsyncLLMServerManager.
-
-        Args:
-            config (DictConfig): YAML config.
-            server_handles (List[ray.actor.ActorHandle]): OpenAI compatible LLM server actor handles.
-            max_cache_size (int, optional): max cache size for request_id to server mapping. Defaults to 10000.
-        """
-        self.config = config
-        self.server_handles = server_handles
-        random.shuffle(self.server_handles)
-
-        # Least requests load balancing
-        self.weighted_serveres = [[0, idx, server] for idx, server in enumerate(self.server_handles)]
-        heapq.heapify(self.weighted_serveres)
-
-        # LRU cache to map request_id to server
-        self.request_id_to_server = LRUCache(maxsize=max_cache_size)
-
-    def _choose_server(self, request_id: str) -> ray.actor.ActorHandle:
-        # TODO: implement server pressure awareness load balancing
-        if request_id in self.request_id_to_server:
-            return self.request_id_to_server[request_id]
-
-        _, _, server = self.weighted_serveres[0]
-        self.weighted_serveres[0][0] += 1
-        heapq.heapreplace(self.weighted_serveres, self.weighted_serveres[0])
-        self.request_id_to_server[request_id] = server
-        return server
-
-    @rollout_trace_op
-    async def generate(
-        self,
-        request_id,
-        *,
-        prompt_ids: list[int],
-        sampling_params: dict[str, Any],
-        image_data: Optional[list[Any]] = None,
-    ) -> TokenOutput:
-        """Generate tokens from prompt ids.
-
-        Args:
-            request_id (str): request id for sticky session.
-            prompt_ids (List[int]): List of prompt token ids.
-            sampling_params (Dict[str, Any]): Sampling parameters for the chat completion.
-
-        Returns:
-            TokenOutput: token output
-        """
-        server = self._choose_server(request_id)
-        output = await server.generate.remote(
-            request_id=uuid4().hex,  # use new request_id for each turn
-            prompt_ids=prompt_ids,
-            sampling_params=sampling_params,
-            image_data=image_data,
-        )
-        return output
 
 
 class AgentLoopMetrics(BaseModel):
@@ -190,7 +120,7 @@ class AgentLoopBase(ABC):
     def __init__(
         self,
         trainer_config: DictConfigWrap,
-        server_manager: AsyncLLMServerManager,
+        router: ray.actor.ActorHandle,
         tokenizer: AutoTokenizer,
         processor: AutoProcessor,
         **kwargs,
@@ -199,12 +129,12 @@ class AgentLoopBase(ABC):
 
         Args:
             trainer_config (DictConfigWrap): trainer config.
-            server_manager (AsyncLLMServerManager): OpenAI compatible LLM server manager.
+            router: CentralRouter Ray actor handle.
             tokenizer (AutoTokenizer): Tokenizer for tokenize messages.
             processor (AutoProcessor): Processor for process messages.
         """
         self.config = trainer_config.config
-        self.server_manager = server_manager
+        self.router = router
         self.tokenizer = tokenizer
         self.processor = processor
         self.loop = get_event_loop()
@@ -248,29 +178,18 @@ class AgentLoopWorkerBase:
     def __init__(
         self,
         config: DictConfig,
-        router_or_handles,
+        router: ray.actor.ActorHandle,
         reward_router_address: str = None,
     ):
         """Initialize agent loop manager.
 
         Args:
             config (DictConfig): YAML config.
-            router_or_handles: Either a CentralRouter Ray actor handle or a list of server handles.
+            router: CentralRouter Ray actor handle.
+            reward_router_address: Address for reward router.
         """
         self.config = config
-
-        # for recipe to change
-        if not hasattr(self, "server_manager"):
-            # Check if we got a router or server handles
-            if isinstance(router_or_handles, list):
-                # Legacy path: per-worker AsyncLLMServerManager
-                self.server_manager = AsyncLLMServerManager(config, router_or_handles)
-            else:
-                # New path: central router with adapter
-                from verl.experimental.agent_loop.router import RouterAdapter
-
-                self.server_manager = RouterAdapter(router_or_handles)
-
+        self.router = router
         self.reward_router_address = reward_router_address
 
         model_path = config.actor_rollout_ref.model.path
@@ -414,7 +333,7 @@ class AgentLoopWorkerBase:
             agent_loop = hydra.utils.instantiate(
                 config=agent_loop_config,
                 trainer_config=DictConfigWrap(config=self.config),
-                server_manager=self.server_manager,
+                router=self.router,
                 tokenizer=self.tokenizer,
                 processor=self.processor,
             )
@@ -677,15 +596,15 @@ class AgentLoopWorker(AgentLoopWorkerBase):
     """Agent loop worker takes a batch of messages and run each message in an agent loop."""
 
     def __init__(
-        self, config: DictConfig, server_handles: list[ray.actor.ActorHandle], reward_router_address: str = None
+        self, config: DictConfig, router: ray.actor.ActorHandle, reward_router_address: str = None
     ):
         """Initialize agent loop manager.
         Args:
             config (DictConfig): YAML config.
-            server_handles (List[ray.actor.ActorHandle]): OpenAI compatible LLM server actor handles.
+            router: CentralRouter Ray actor handle.
             reward_router_address (str): reward router address.
         """
-        super().__init__(config, server_handles, reward_router_address)
+        super().__init__(config, router, reward_router_address)
 
 
 async def get_trajectory_info(step, index, validate):
@@ -779,15 +698,11 @@ class AgentLoopManager:
 
         print(f"AgentLoopManager: {self.server_addresses}")
 
-        # Conditionally create central router based on config
-        self.use_central_router = self.config.actor_rollout_ref.rollout.agent.get("use_central_router", False)
-        if self.use_central_router:
-            from verl.experimental.agent_loop.router import CentralRouter
+        # Create central router for all workers
+        from verl.experimental.agent_loop.router import CentralRouter
 
-            self.router = CentralRouter.remote(self.server_handles)
-            logger.info("AgentLoopManager: Using CentralRouter for request routing")
-        else:
-            self.router = None
+        self.router = CentralRouter.remote(self.server_handles)
+        logger.info("AgentLoopManager: Created CentralRouter for request routing")
 
         # Update Prometheus configuration with server addresses
         if rollout_config.prometheus.enable:
@@ -799,9 +714,6 @@ class AgentLoopManager:
         self.agent_loop_workers = []
         num_workers = self.config.actor_rollout_ref.rollout.agent.num_workers
 
-        # Pass router if using central router, otherwise pass server_handles
-        router_or_handles = self.router if self.use_central_router else self.server_handles
-
         node_ids = [node["NodeID"] for node in ray.nodes() if node["Alive"] and node["Resources"].get("CPU", 0) > 0]
         for i in range(num_workers):
             # Round-robin scheduling over the all nodes
@@ -812,7 +724,7 @@ class AgentLoopManager:
                     scheduling_strategy=ray.util.scheduling_strategies.NodeAffinitySchedulingStrategy(
                         node_id=node_id, soft=True
                     ),
-                ).remote(self.config, router_or_handles, self.reward_router_address)
+                ).remote(self.config, self.router, self.reward_router_address)
             )
 
     def generate_sequences(self, prompts: DataProto) -> DataProto:

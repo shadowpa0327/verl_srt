@@ -19,7 +19,7 @@ This test validates:
 2. Load balancing distributes requests evenly (least-requests)
 3. Sticky sessions work (same request_id → same server)
 4. Multiple concurrent requests are handled correctly
-5. RouterAdapter provides the same interface as AsyncLLMServerManager
+5. Server load tracking works correctly
 
 Usage:
     python tests/workers/rollout/rollout_vllm/test_central_router.py
@@ -247,42 +247,6 @@ async def test_concurrent_requests():
     print("test_concurrent_requests PASSED")
 
 
-async def test_router_adapter():
-    """Test that RouterAdapter provides the same interface as AsyncLLMServerManager."""
-    from verl.experimental.agent_loop.router import CentralRouter, RouterAdapter
-
-    # Create mock servers
-    num_servers = 2
-    servers = [MockVLLMServer.remote(i) for i in range(num_servers)]
-
-    # Create router and adapter
-    router = CentralRouter.remote(servers)
-    adapter = RouterAdapter(router)
-
-    # Use adapter with same interface as AsyncLLMServerManager
-    request_id = "adapter_test"
-    output = await adapter.generate(
-        request_id,
-        prompt_ids=[1, 2, 3],
-        sampling_params={"max_tokens": 5},
-    )
-
-    # Verify output
-    assert output is not None
-    assert len(output.token_ids) == 5
-
-    # Send more requests through adapter
-    for i in range(3):
-        output = await adapter.generate(
-            f"adapter_request_{i}",
-            prompt_ids=[1, 2, 3],
-            sampling_params={"max_tokens": 5},
-        )
-        assert output is not None
-
-    print("test_router_adapter PASSED")
-
-
 async def test_server_loads_tracking():
     """Test that server load tracking works correctly."""
     from verl.experimental.agent_loop.router import CentralRouter
@@ -337,7 +301,6 @@ async def run_all_tests():
     await test_load_balancing()
     await test_sticky_sessions()
     await test_concurrent_requests()
-    await test_router_adapter()
     await test_server_loads_tracking()
 
     print("\n" + "=" * 60)

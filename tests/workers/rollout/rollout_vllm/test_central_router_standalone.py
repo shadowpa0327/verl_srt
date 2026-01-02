@@ -187,86 +187,6 @@ async def test_sticky_sessions():
     print("test_sticky_sessions PASSED")
 
 
-async def test_router_adapter():
-    """Test RouterAdapter provides same interface as AsyncLLMServerManager."""
-    from verl.experimental.agent_loop.router import RouterAdapter
-
-    adapter = RouterAdapter(router)
-
-    # Test that adapter has the expected generate method
-    assert hasattr(adapter, "generate")
-    assert callable(adapter.generate)
-
-    # Test generation
-    prompt_ids = tokenizer.apply_chat_template(
-        [{"role": "user", "content": "Say hello."}],
-        add_generation_prompt=True,
-        tokenize=True,
-    )
-
-    output = await adapter.generate(
-        request_id=f"adapter_{uuid4().hex[:8]}",
-        prompt_ids=prompt_ids,
-        sampling_params={"max_tokens": 10},
-    )
-
-    assert output is not None
-    assert len(output.token_ids) > 0
-
-    print("test_router_adapter PASSED")
-
-
-async def test_compare_with_legacy():
-    """Compare CentralRouter output with AsyncLLMServerManager."""
-    from verl.experimental.agent_loop.agent_loop import AsyncLLMServerManager
-    from verl.experimental.agent_loop.router import CentralRouter, RouterAdapter
-
-    # Create fresh router for comparison
-    comparison_router = CentralRouter.remote(server_handles)
-    adapter = RouterAdapter(comparison_router)
-
-    # Create legacy manager with same server handles
-    legacy_manager = AsyncLLMServerManager(trainer_config, server_handles)
-
-    # Use deterministic sampling (temperature=0) for identical outputs
-    prompt_ids = tokenizer.apply_chat_template(
-        [{"role": "user", "content": "What is 2+2? Answer with just the number."}],
-        add_generation_prompt=True,
-        tokenize=True,
-    )
-    sampling_params = {"max_tokens": 10, "temperature": 0.0}
-
-    # Run through CentralRouter
-    output_router = await adapter.generate(
-        request_id=f"compare_router_{uuid4().hex[:8]}",
-        prompt_ids=prompt_ids,
-        sampling_params=sampling_params,
-    )
-
-    # Run through legacy AsyncLLMServerManager
-    output_legacy = await legacy_manager.generate(
-        request_id=f"compare_legacy_{uuid4().hex[:8]}",
-        prompt_ids=prompt_ids,
-        sampling_params=sampling_params,
-    )
-
-    # Decode outputs
-    text_router = tokenizer.decode(output_router.token_ids, skip_special_tokens=True)
-    text_legacy = tokenizer.decode(output_legacy.token_ids, skip_special_tokens=True)
-
-    print(f"   CentralRouter output: {text_router}")
-    print(f"   Legacy manager output: {text_legacy}")
-
-    # With temperature=0, outputs should be identical
-    assert output_router.token_ids == output_legacy.token_ids, (
-        f"Outputs differ!\n"
-        f"  Router: {output_router.token_ids}\n"
-        f"  Legacy: {output_legacy.token_ids}"
-    )
-
-    print("test_compare_with_legacy PASSED - Outputs are identical!")
-
-
 async def test_load_tracking():
     """Test that router's load tracking works correctly."""
     # Check loads (may not be exactly 0 due to async timing)
@@ -304,17 +224,7 @@ async def run_all_tests():
     await test_sticky_sessions()
 
     print("\n" + "=" * 70)
-    print("Test 4: RouterAdapter Interface")
-    print("-" * 70)
-    await test_router_adapter()
-
-    print("\n" + "=" * 70)
-    print("Test 5: Compare with AsyncLLMServerManager")
-    print("-" * 70)
-    await test_compare_with_legacy()
-
-    print("\n" + "=" * 70)
-    print("Test 6: Load Tracking")
+    print("Test 4: Load Tracking")
     print("-" * 70)
     await test_load_tracking()
 

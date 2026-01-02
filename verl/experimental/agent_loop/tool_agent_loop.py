@@ -22,10 +22,11 @@ from uuid import uuid4
 
 from transformers import AutoProcessor, AutoTokenizer
 
+import ray
+
 from verl.experimental.agent_loop.agent_loop import (
     AgentLoopBase,
     AgentLoopOutput,
-    AsyncLLMServerManager,
     DictConfigWrap,
     register,
 )
@@ -95,12 +96,12 @@ class ToolAgentLoop(AgentLoopBase):
     def __init__(
         self,
         trainer_config: DictConfigWrap,
-        server_manager: AsyncLLMServerManager,
+        router: ray.actor.ActorHandle,
         tokenizer: AutoTokenizer,
         processor: AutoProcessor,
         **kwargs,
     ):
-        super().__init__(trainer_config, server_manager, tokenizer, processor, **kwargs)
+        super().__init__(trainer_config, router, tokenizer, processor, **kwargs)
         config = trainer_config.config
 
         # Initialize tools from config file
@@ -233,8 +234,8 @@ class ToolAgentLoop(AgentLoopBase):
         add_messages: list[dict[str, Any]] = []
 
         with simple_timer("generate_sequences", agent_data.metrics):
-            output = await self.server_manager.generate(
-                request_id=agent_data.request_id,
+            output = await self.router.generate.remote(
+                agent_data.request_id,
                 prompt_ids=agent_data.prompt_ids,
                 sampling_params=sampling_params,
                 image_data=agent_data.image_data,

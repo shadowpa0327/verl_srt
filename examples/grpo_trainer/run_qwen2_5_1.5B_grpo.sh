@@ -3,14 +3,10 @@
 
 set -x
 
-# Toggle for CentralRouter vs original M2N routing
-# Set to True to use CentralRouter, False for original per-worker AsyncLLMServerManager
-USE_CENTRAL_ROUTER=${USE_CENTRAL_ROUTER:-False}
-
 python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=grpo \
-    data.train_files=./data/gsm8k/train.parquet \
-    data.val_files=./data/gsm8k/test.parquet \
+    data.train_files=$HOME/data/gsm8k/train.parquet \
+    data.val_files=$HOME/data/gsm8k/test.parquet \
     data.train_batch_size=128 \
     data.max_prompt_length=512 \
     data.max_response_length=1024 \
@@ -33,15 +29,14 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.name=vllm \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
     actor_rollout_ref.rollout.n=5 \
-    actor_rollout_ref.rollout.agent.use_central_router=$USE_CENTRAL_ROUTER \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=16 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     algorithm.use_kl_in_reward=False \
     trainer.critic_warmup=0 \
     trainer.logger='["console", "wandb"]' \
-    trainer.project_name='verl_grpo_example_gsm8k' \
+    trainer.project_name='verl_grpo_example_gsm8k_2gpus' \
     trainer.experiment_name='qwen25_1.5b_function_rm' \
-    trainer.n_gpus_per_node=1 \
+    trainer.n_gpus_per_node=2 \
     trainer.nnodes=1 \
     trainer.save_freq=20 \
     trainer.test_freq=5 \
