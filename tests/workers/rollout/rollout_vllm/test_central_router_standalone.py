@@ -19,8 +19,6 @@ instead of mock servers. It tests:
 1. Basic token generation through the router
 2. Multiple concurrent requests
 3. Sticky sessions (prefix caching)
-4. RouterAdapter integration
-5. Comparison with AsyncLLMServerManager (deterministic output matching)
 
 Usage:
     python tests/workers/rollout/rollout_vllm/test_central_router_standalone.py
@@ -72,10 +70,6 @@ router = None
 
 async def test_basic_generation():
     """Test CentralRouter generates tokens with real vLLM server."""
-    from verl.experimental.agent_loop.router import RouterAdapter
-
-    adapter = RouterAdapter(router)
-
     # Create a simple prompt
     prompt_ids = tokenizer.apply_chat_template(
         [{"role": "user", "content": "What is 2+2?"}],
@@ -83,7 +77,7 @@ async def test_basic_generation():
         tokenize=True,
     )
 
-    output = await adapter.generate(
+    output = await router.generate.remote(
         request_id=f"basic_{uuid4().hex[:8]}",
         prompt_ids=prompt_ids,
         sampling_params={"max_tokens": 20, "temperature": 0.7},
@@ -105,10 +99,6 @@ async def test_basic_generation():
 
 async def test_concurrent_requests():
     """Test multiple concurrent requests are handled correctly."""
-    from verl.experimental.agent_loop.router import RouterAdapter
-
-    adapter = RouterAdapter(router)
-
     prompts = [
         "What is the capital of France?",
         "Who wrote Romeo and Juliet?",
@@ -124,7 +114,7 @@ async def test_concurrent_requests():
             add_generation_prompt=True,
             tokenize=True,
         )
-        output = await adapter.generate(
+        output = await router.generate.remote(
             request_id=f"concurrent_{idx}_{uuid4().hex[:8]}",
             prompt_ids=prompt_ids,
             sampling_params={"max_tokens": 30, "temperature": 0.7},
@@ -149,10 +139,6 @@ async def test_concurrent_requests():
 
 async def test_sticky_sessions():
     """Test same request_id routes to same server (validates routing logic)."""
-    from verl.experimental.agent_loop.router import RouterAdapter
-
-    adapter = RouterAdapter(router)
-
     # Simulate a multi-turn conversation with same request_id
     conversation_id = f"conversation_{uuid4().hex[:8]}"
     turns = [
@@ -170,7 +156,7 @@ async def test_sticky_sessions():
             tokenize=True,
         )
 
-        output = await adapter.generate(
+        output = await router.generate.remote(
             request_id=conversation_id,  # Same ID for all turns
             prompt_ids=prompt_ids,
             sampling_params={"max_tokens": 30, "temperature": 0.7},

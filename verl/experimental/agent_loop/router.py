@@ -63,9 +63,10 @@ class CentralRouter:
         self.server_handles = server_handles
         self.num_servers = len(server_handles)
 
-        # Min-heap for least-requests load balancing: [request_count, server_idx, server_handle]
-        self.weighted_servers = [[0, idx, server] for idx, server in enumerate(server_handles)]
-        heapq.heapify(self.weighted_servers)
+        # Least-requests load balancing (same pattern as AsyncLLMServerManager):
+        # A min-heap of [num_sessions, server_idx, server_handle].
+        self.weighted_serveres = [[0, idx, server] for idx, server in enumerate(server_handles)]
+        heapq.heapify(self.weighted_serveres)
 
         # LRU cache for sticky sessions (same request_id → same server for prefix caching)
         self.request_id_to_server = LRUCache(maxsize=max_cache_size)
@@ -89,35 +90,20 @@ class CentralRouter:
         """
         # Check sticky session cache first (for multi-turn conversations)
         if request_id in self.request_id_to_server:
-            return self.request_id_to_server[request_id]
+            server_idx = self.request_id_to_server[request_id]
+            return server_idx, self.server_handles[server_idx]
 
         # Find least loaded server from heap
-        _, server_idx, server = self.weighted_servers[0]
+        _, server_idx, server = self.weighted_serveres[0]
 
-        # Increment load counter and reheapify
-        self.weighted_servers[0][0] += 1
-        heapq.heapreplace(self.weighted_servers, self.weighted_servers[0])
+        # Increment session counter and reheapify (same pattern as AsyncLLMServerManager).
+        self.weighted_serveres[0][0] += 1
+        heapq.heapreplace(self.weighted_serveres, self.weighted_serveres[0])
 
-        # Cache for sticky sessions
-        self.request_id_to_server[request_id] = (server_idx, server)
-        self.server_load[server_idx] += 1
+        # Cache for sticky sessions (store only the index; server handle is in server_handles)
+        self.request_id_to_server[request_id] = server_idx
 
         return server_idx, server
-
-    def _release_server(self, server_idx: int):
-        """Decrement load counter when request completes.
-
-        Args:
-            server_idx: Index of server to release.
-        """
-        self.server_load[server_idx] -= 1
-
-        # Update heap entry for this server
-        for entry in self.weighted_servers:
-            if entry[1] == server_idx:
-                entry[0] -= 1
-                break
-        heapq.heapify(self.weighted_servers)
 
     async def generate(
         self,
@@ -140,6 +126,7 @@ class CentralRouter:
         """
         self.total_requests += 1
         server_idx, server = self._choose_server(request_id)
+        self.server_load[server_idx] += 1
 
         try:
             # Use new request_id for each turn (vLLM requirement)
@@ -151,7 +138,12 @@ class CentralRouter:
             )
             return output
         finally:
-            self._release_server(server_idx)
+            self.server_load[server_idx] -= 1
+            if self.server_load[server_idx] < 0:
+                logger.warning(
+                    "CentralRouter server_load went negative for server_idx=%s; resetting to 0.", server_idx
+                )
+                self.server_load[server_idx] = 0
 
     def get_server_loads(self) -> dict[int, int]:
         """Get current load per server (for monitoring/debugging).
