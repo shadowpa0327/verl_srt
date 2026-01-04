@@ -240,6 +240,8 @@ class RunaheadCentralRouter:
         self._workload_num_requests_running: list[Optional[int]] = [None] * self.num_servers
         self._workload_num_requests_waiting: list[Optional[int]] = [None] * self.num_servers
         self._workload_last_poll_s: list[float] = [0.0] * self.num_servers
+        self._workload_last_error: list[Optional[str]] = [None] * self.num_servers
+        self._workload_last_warning: list[Optional[str]] = [None] * self.num_servers
 
         # Metrics
         self.total_requests = 0
@@ -323,6 +325,32 @@ class RunaheadCentralRouter:
                 "num_requests_waiting": self._workload_num_requests_waiting[idx],
                 "kv_cache_usage": kv,
                 "age_s": (now - last_poll_s) if last_poll_s else None,
+                "workload_error": self._workload_last_error[idx],
+                "workload_warning": self._workload_last_warning[idx],
+            }
+        return snapshot
+
+    async def get_server_state(self, *, poll_workload: bool = False) -> dict[int, dict[str, Any]]:
+        """Return a per-server snapshot of router load and cached workload metrics.
+
+        Args:
+            poll_workload: If True, poll all servers once before returning.
+        """
+        if poll_workload:
+            await self._poll_all_servers()
+
+        now = time.monotonic()
+        snapshot: dict[int, dict[str, Any]] = {}
+        for idx in range(self.num_servers):
+            last_poll_s = self._workload_last_poll_s[idx]
+            snapshot[idx] = {
+                "server_load": int(self.server_load[idx]),
+                "num_requests_running": self._workload_num_requests_running[idx],
+                "num_requests_waiting": self._workload_num_requests_waiting[idx],
+                "kv_cache_usage": self._workload_kv_cache_usage[idx],
+                "age_s": (now - last_poll_s) if last_poll_s else None,
+                "workload_error": self._workload_last_error[idx],
+                "workload_warning": self._workload_last_warning[idx],
             }
         return snapshot
 
@@ -353,11 +381,27 @@ class RunaheadCentralRouter:
 
         for idx, result in enumerate(results):
             if isinstance(result, Exception):
+                self._workload_last_error[idx] = repr(result)
+                self._workload_last_warning[idx] = None
                 continue
             if not isinstance(result, dict):
+                self._workload_last_error[idx] = f"Invalid workload result type: {type(result)!r}"
+                self._workload_last_warning[idx] = None
                 continue
             if result.get("error"):
+                self._workload_last_error[idx] = str(result.get("error"))
+                self._workload_last_warning[idx] = None
                 continue
+            self._workload_last_error[idx] = None
+            warning = result.get("warning")
+            if warning:
+                available = result.get("available_vllm_metrics")
+                if isinstance(available, list) and available:
+                    self._workload_last_warning[idx] = f"{warning}; available_vllm_metrics={available}"
+                else:
+                    self._workload_last_warning[idx] = str(warning)
+            else:
+                self._workload_last_warning[idx] = None
 
             running = result.get("num_requests_running")
             waiting = result.get("num_requests_waiting")
@@ -367,6 +411,7 @@ class RunaheadCentralRouter:
                 self._workload_num_requests_running[idx] = int(running)
             if isinstance(waiting, (int, float)):
                 self._workload_num_requests_waiting[idx] = int(waiting)
+            self._workload_last_poll_s[idx] = now
 
             if isinstance(kv_usage, (int, float)):
                 kv = float(kv_usage)
@@ -375,7 +420,6 @@ class RunaheadCentralRouter:
                     kv /= 100.0
                 kv = max(0.0, min(1.0, kv))
                 self._workload_kv_cache_usage[idx] = kv
-                self._workload_last_poll_s[idx] = now
 
     def _choose_server(self, request_id: str) -> tuple[int, ray.actor.ActorHandle]:
         """Choose server using least-requests load balancing with sticky sessions."""

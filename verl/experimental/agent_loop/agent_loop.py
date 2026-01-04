@@ -807,6 +807,8 @@ class AgentLoopManager:
             RunaheadResult containing primary outputs, secondary outputs, and metrics.
         """
         from collections import deque
+        import json
+        import time
         from uuid import uuid4
 
         from verl.experimental.agent_loop.runahead import (
@@ -857,6 +859,7 @@ class AgentLoopManager:
         if secondary_prompt_batch is None:
             raise KeyError("secondary_prompts.batch must contain 'input_ids' or 'prompts'")
         secondary_attention_mask = secondary_prompts.batch.get("attention_mask")
+        secondary_sampling_params = secondary_prompts.non_tensor_batch.get("sampling_params")
 
         for i in range(len(secondary_prompts)):
             sample_id = f"secondary_{i}"
@@ -871,10 +874,19 @@ class AgentLoopManager:
                 # Fallback: preserve previous behavior if attention_mask is missing.
                 prompt_ids = [t for t in prompt_ids_tensor.tolist() if t != 0]
 
+            sampling_params: dict[str, Any] = {}
+            if secondary_sampling_params is not None:
+                try:
+                    raw_params = secondary_sampling_params[i]
+                except Exception:
+                    raw_params = None
+                if isinstance(raw_params, dict):
+                    sampling_params = dict(raw_params)
+
             work_item = SecondaryWorkItem(
                 sample_id=sample_id,
                 prompt_ids=prompt_ids,
-                sampling_params={},  # Use default sampling params
+                sampling_params=sampling_params,
             )
             secondary_queue.append((work_item, 0))  # retry_count=0
             work_items_by_sample_id[sample_id] = work_item
@@ -897,13 +909,44 @@ class AgentLoopManager:
 
         # ========== LAUNCH PRIMARY ==========
 
+        print_server_state = os.getenv("VERL_RUNAHEAD_PRINT_SERVER_STATE", "0").strip() not in ("0", "false", "False")
+        poll_workload = os.getenv("VERL_RUNAHEAD_PRINT_POLL_WORKLOAD", "1").strip() not in ("0", "false", "False")
+        try:
+            print_interval_s = float(os.getenv("VERL_RUNAHEAD_PRINT_INTERVAL_S", "1.0"))
+        except ValueError:
+            print_interval_s = 1.0
+        next_print_s = time.monotonic()
+
         primary_chunks = primary_prompts.chunk(len(self.agent_loop_workers))
         primary_results_by_worker: list[Optional[DataProto]] = [None] * len(primary_chunks)
         for i, (worker, chunk) in enumerate(zip(self.agent_loop_workers, primary_chunks, strict=True)):
             ref = worker.generate_sequences.remote(chunk)
             primary_refs[ref] = i
 
+        def _maybe_print_server_state(tag: str, *, force: bool = False) -> None:
+            nonlocal next_print_s
+            if not print_server_state:
+                return
+            now = time.monotonic()
+            if not force and now < next_print_s:
+                return
+            next_print_s = now + max(0.1, print_interval_s)
+            try:
+                state = ray.get(self.router.get_server_state.remote(poll_workload=poll_workload))
+            except Exception as e:
+                print(f"[runahead:{tag}] get_server_state failed: {e}", flush=True)
+                return
+            payload = {
+                "primary_left": len(primary_refs),
+                "secondary_in_flight": len(secondary_refs),
+                "secondary_queue": len(secondary_queue),
+                "servers": state,
+            }
+            print(f"[runahead:{tag}] {json.dumps(payload, default=str)}", flush=True)
+
         # ========== BUSY LOOP: ray.wait + drip-feed ==========
+
+        _maybe_print_server_state("start", force=True)
 
         while primary_refs:
             # Combine all refs
@@ -955,6 +998,8 @@ class AgentLoopManager:
                     finally:
                         del secondary_refs[ref]
                         secondary_request_ids.pop(sample_id, None)
+
+            _maybe_print_server_state("loop")
 
             # If the last primary just finished, don't start any new secondary.
             if not primary_refs:
@@ -1027,14 +1072,84 @@ class AgentLoopManager:
                 if sample_id in secondary_request_ids
             ]
 
-            # Abort on router
+            # Abort on router - best-effort signal to vLLM to stop and return partial outputs.
             if ids_to_abort:
                 try:
                     ray.get(self.router.abort_requests.remote(ids_to_abort))
                 except Exception as e:
                     logger.warning(f"Failed to abort secondary requests: {e}")
 
-            # Cancel remaining refs and record as aborted
+            _maybe_print_server_state("abort_start", force=True)
+
+            # Give aborted tasks a short grace window to return partial outputs. This prevents
+            # ray.cancel() from discarding outputs and avoids leaking router-side in-flight counters.
+            abort_deadline_s = time.monotonic() + max(0.0, float(runahead_config.abort_grace_s))
+            remaining_refs = list(secondary_refs.keys())
+            while remaining_refs and time.monotonic() < abort_deadline_s:
+                timeout_s = min(
+                    max(0.0, abort_deadline_s - time.monotonic()),
+                    float(runahead_config.poll_interval_s),
+                )
+                ready, not_ready = ray.wait(
+                    remaining_refs,
+                    num_returns=len(remaining_refs),
+                    timeout=timeout_s,
+                )
+                if not ready:
+                    remaining_refs = not_ready
+                    continue
+
+                for ref in ready:
+                    sample_id = secondary_refs.get(ref)
+                    if sample_id is None:
+                        continue
+                    try:
+                        output = ray.get(ref)
+                        if output is None:
+                            secondary_rejected += 1
+                            secondary_results.append(
+                                SecondaryOutput(
+                                    sample_id=sample_id,
+                                    output=None,
+                                    status="rejected",
+                                    tokens_generated=0,
+                                )
+                            )
+                        else:
+                            stop_reason = getattr(output, "stop_reason", None)
+                            tokens_generated = len(output.token_ids) if getattr(output, "token_ids", None) else 0
+                            if stop_reason == "aborted":
+                                secondary_aborted += 1
+                                status = "aborted"
+                            else:
+                                secondary_completed += 1
+                                status = "completed"
+                            secondary_results.append(
+                                SecondaryOutput(
+                                    sample_id=sample_id,
+                                    output=output,
+                                    status=status,
+                                    tokens_generated=tokens_generated,
+                                )
+                            )
+                    except Exception as e:
+                        logger.debug(f"Secondary {sample_id} failed after abort: {e}")
+                        secondary_aborted += 1
+                        secondary_results.append(
+                            SecondaryOutput(
+                                sample_id=sample_id,
+                                output=None,
+                                status="aborted",
+                                tokens_generated=0,
+                            )
+                        )
+                    finally:
+                        secondary_refs.pop(ref, None)
+                        secondary_request_ids.pop(sample_id, None)
+
+                remaining_refs = list(secondary_refs.keys())
+
+            # Force-cancel any stragglers (abort should be quick; this is a safety valve).
             for ref, sample_id in list(secondary_refs.items()):
                 try:
                     # Actor tasks only support force=False; for async actors this maps to asyncio cancellation.
@@ -1042,12 +1157,18 @@ class AgentLoopManager:
                 except Exception:
                     pass
                 secondary_aborted += 1
-                secondary_results.append(SecondaryOutput(
-                    sample_id=sample_id,
-                    output=None,
-                    status="aborted",
-                    tokens_generated=0,
-                ))
+                secondary_results.append(
+                    SecondaryOutput(
+                        sample_id=sample_id,
+                        output=None,
+                        status="aborted",
+                        tokens_generated=0,
+                    )
+                )
+                secondary_refs.pop(ref, None)
+                secondary_request_ids.pop(sample_id, None)
+
+            _maybe_print_server_state("abort_done", force=True)
 
         # Sleep servers
         if runahead_config.use_kv_cache_admission:

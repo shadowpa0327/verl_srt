@@ -19,7 +19,6 @@ requests while waiting for primary requests to complete.
 """
 from dataclasses import dataclass
 
-
 @dataclass
 class RunaheadConfig:
     """Configuration for run-ahead rollout.
@@ -39,6 +38,8 @@ class RunaheadConfig:
         workload_poll_interval_s: Background polling interval for server.get_workload().
         workload_staleness_threshold_s: Treat workload metrics as stale after this many seconds.
         require_fresh_workload: If True, reject secondaries until fresh workload metrics exist.
+        abort_grace_s: After issuing abort_requests(), wait up to this many seconds for
+            in-flight secondary tasks to return partial outputs before force-canceling.
     """
 
     enabled: bool = False
@@ -53,3 +54,6 @@ class RunaheadConfig:
     workload_poll_interval_s: float = 0.5
     workload_staleness_threshold_s: float = 2.0
     require_fresh_workload: bool = False
+
+    # Abort handling: allow aborted secondaries to return partial outputs.
+    abort_grace_s: float = 1.0
