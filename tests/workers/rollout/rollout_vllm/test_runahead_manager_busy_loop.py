@@ -57,7 +57,7 @@ def _log(msg: str) -> None:
 @dataclass
 class MockTokenOutput:
     token_ids: list[int] = field(default_factory=list)
-    stop_reason: str = "stop"
+    stop_reason: str = "completed"
 
 
 @ray.remote
@@ -72,7 +72,9 @@ class MockVLLMServer:
         self.requests_aborted: list[str] = []
         self.request_start_s: dict[str, float] = {}
         self.request_end_s: dict[str, float] = {}
+        self.request_sampling_params: dict[str, dict[str, Any]] = {}
         self._active: set[str] = set()
+        self._abort_events: dict[str, asyncio.Event] = {}
 
     async def generate(
         self,
@@ -82,15 +84,44 @@ class MockVLLMServer:
         image_data: Optional[list[Any]] = None,
     ) -> MockTokenOutput:
         self.requests_received.append(request_id)
+        self.request_sampling_params[request_id] = dict(sampling_params)
         self._active.add(request_id)
         self.request_start_s[request_id] = time.perf_counter()
-        await asyncio.sleep(self.delay_s)
+        abort_event = asyncio.Event()
+        self._abort_events[request_id] = abort_event
+
+        sleep_task = asyncio.create_task(asyncio.sleep(self.delay_s))
+        abort_task = asyncio.create_task(abort_event.wait())
+        done, pending = await asyncio.wait({sleep_task, abort_task}, return_when=asyncio.FIRST_COMPLETED)
+        for task in pending:
+            task.cancel()
+
+        aborted = abort_task in done and sleep_task not in done
         self.request_end_s[request_id] = time.perf_counter()
         self._active.discard(request_id)
-        return MockTokenOutput(token_ids=[1, 2, 3, 4, 5])
+        self._abort_events.pop(request_id, None)
+
+        max_tokens = sampling_params.get("max_tokens")
+        if max_tokens is None:
+            max_tokens = sampling_params.get("max_new_tokens")
+        try:
+            max_tokens_int = int(max_tokens) if max_tokens is not None else 5
+        except (TypeError, ValueError):
+            max_tokens_int = 5
+        max_tokens_int = max(1, max_tokens_int)
+
+        if aborted:
+            out_len = min(max_tokens_int, 8)
+            return MockTokenOutput(token_ids=list(range(1, out_len + 1)), stop_reason="aborted")
+
+        out_len = min(max_tokens_int, 16)
+        return MockTokenOutput(token_ids=list(range(1, out_len + 1)), stop_reason="completed")
 
     async def abort_request(self, request_id: str) -> None:
         self.requests_aborted.append(request_id)
+        abort_event = self._abort_events.get(request_id)
+        if abort_event is not None:
+            abort_event.set()
         self._active.discard(request_id)
 
     async def get_workload(self) -> dict[str, Any]:
@@ -112,6 +143,7 @@ class MockVLLMServer:
             "active_requests": len(self._active),
             "request_start_s": dict(self.request_start_s),
             "request_end_s": dict(self.request_end_s),
+            "request_sampling_params": dict(self.request_sampling_params),
         }
 
 
@@ -146,7 +178,11 @@ def _make_primary_dataproto(num_items: int) -> DataProto:
     return DataProto(non_tensor_batch={"idx": np.arange(num_items, dtype=np.int64)})
 
 
-def _make_secondary_dataproto(num_items: int, seq_len: int = 8) -> DataProto:
+def _make_secondary_dataproto(
+    num_items: int,
+    seq_len: int = 8,
+    sampling_params: Optional[list[dict[str, Any]]] = None,
+) -> DataProto:
     input_ids = torch.zeros((num_items, seq_len), dtype=torch.long)
     attention_mask = torch.zeros((num_items, seq_len), dtype=torch.long)
     for i in range(num_items):
@@ -162,7 +198,12 @@ def _make_secondary_dataproto(num_items: int, seq_len: int = 8) -> DataProto:
         },
         batch_size=(num_items,),
     )
-    return DataProto(batch=batch)
+    non_tensor_batch: dict[str, Any] = {}
+    if sampling_params is not None:
+        if len(sampling_params) != num_items:
+            raise ValueError(f"sampling_params length ({len(sampling_params)}) must match num_items ({num_items})")
+        non_tensor_batch["sampling_params"] = np.array(sampling_params, dtype=object)
+    return DataProto(batch=batch, non_tensor_batch=non_tensor_batch)
 
 
 def test_router_rejects_when_at_capacity() -> None:
@@ -283,7 +324,63 @@ def test_manager_busy_loop_e2e() -> None:
     assert result.metrics.secondary_completed == 0
     assert result.metrics.secondary_aborted == cfg.max_secondary_concurrent
     assert server_stats["requests_aborted"] >= 1
+    aborted_outputs = [o for o in result.secondary_outputs if o.status == "aborted"]
+    assert len(aborted_outputs) == cfg.max_secondary_concurrent
+    assert all(o.output is not None for o in aborted_outputs)
+    assert all(getattr(o.output, "stop_reason", None) == "aborted" for o in aborted_outputs)
+    assert all(o.tokens_generated > 0 for o in aborted_outputs)
     _log(f"  - Runahead metrics: {result.metrics}")
+    _log("  - OK")
+
+
+def test_manager_mixed_secondary_max_tokens() -> None:
+    _log("\n[TEST] Manager supports per-sample secondary max_tokens")
+    server = MockVLLMServer.remote(0, delay_s=0.01)
+    router = RunaheadCentralRouter.remote([server], load_threshold=10)
+
+    # Keep primary running long enough to complete multiple secondaries.
+    workers = [
+        MockAgentLoopWorker.remote(worker_id=0, delay_s=0.4),
+        MockAgentLoopWorker.remote(worker_id=1, delay_s=0.4),
+    ]
+
+    manager = AgentLoopManager.__new__(AgentLoopManager)
+    manager.router = router
+    manager.agent_loop_workers = workers
+    manager.reward_model_manager = None
+    manager.wake_up = lambda: None
+    manager.sleep = lambda: None
+
+    primary_prompts = _make_primary_dataproto(num_items=4)
+    secondary_sampling_params = [{"max_tokens": 32} if i < 2 else {"max_tokens": 4} for i in range(8)]
+    secondary_prompts = _make_secondary_dataproto(
+        num_items=8,
+        seq_len=8,
+        sampling_params=secondary_sampling_params,
+    )
+
+    cfg = RunaheadConfig(
+        enabled=True,
+        load_threshold=10,
+        poll_interval_s=0.01,
+        max_retries=0,
+        max_secondary_concurrent=2,
+    )
+
+    result = manager.generate_sequences_with_runahead(primary_prompts, secondary_prompts, cfg)
+    completed = [s for s in result.secondary_outputs if s.status == "completed"]
+    assert completed, result.metrics
+
+    # Long max_tokens should yield longer token_ids for completed samples.
+    by_sample_id = {s.sample_id: s.tokens_generated for s in completed}
+    assert by_sample_id.get("secondary_0") == 16
+    assert by_sample_id.get("secondary_1") == 16
+    assert by_sample_id.get("secondary_2") == 4
+
+    server_stats = ray.get(server.get_stats.remote())
+    seen = list(server_stats["request_sampling_params"].values())
+    assert any(p.get("max_tokens") == 32 for p in seen)
+    assert any(p.get("max_tokens") == 4 for p in seen)
     _log("  - OK")
 
 
@@ -304,6 +401,7 @@ def main() -> None:
         test_router_rejects_when_at_capacity()
         test_router_rejects_when_kv_cache_high()
         test_manager_busy_loop_e2e()
+        test_manager_mixed_secondary_max_tokens()
         print("\n[OK] runahead manager busy-loop tests passed")
     finally:
         _log("[TEST] ray.shutdown()")
