@@ -1027,27 +1027,89 @@ class AgentLoopManager:
                 if sample_id in secondary_request_ids
             ]
 
-            # Abort on router
+            # Abort on router - this tells vLLM to stop generating and return partial results
             if ids_to_abort:
                 try:
                     ray.get(self.router.abort_requests.remote(ids_to_abort))
                 except Exception as e:
                     logger.warning(f"Failed to abort secondary requests: {e}")
 
-            # Cancel remaining refs and record as aborted
-            for ref, sample_id in list(secondary_refs.items()):
+            # Wait for aborted tasks to return with partial tokens (they should complete quickly)
+            # Don't cancel - let them return their partial output
+            abort_wait_refs = list(secondary_refs.keys())
+            if abort_wait_refs:
                 try:
-                    # Actor tasks only support force=False; for async actors this maps to asyncio cancellation.
-                    ray.cancel(ref, force=False)
-                except Exception:
-                    pass
-                secondary_aborted += 1
-                secondary_results.append(SecondaryOutput(
-                    sample_id=sample_id,
-                    output=None,
-                    status="aborted",
-                    tokens_generated=0,
-                ))
+                    # Wait with a short timeout for aborted tasks to return
+                    ready, not_ready = ray.wait(
+                        abort_wait_refs,
+                        num_returns=len(abort_wait_refs),
+                        timeout=5.0,  # 5 second timeout for abort completion
+                    )
+
+                    # Collect partial results from completed refs
+                    for ref in ready:
+                        sample_id = secondary_refs.get(ref)
+                        if sample_id is None:
+                            continue
+                        try:
+                            output = ray.get(ref)
+                            tokens = 0
+                            if output is not None and hasattr(output, 'token_ids') and output.token_ids:
+                                tokens = len(output.token_ids)
+                            secondary_aborted += 1
+                            secondary_results.append(SecondaryOutput(
+                                sample_id=sample_id,
+                                output=output,
+                                status="aborted",
+                                tokens_generated=tokens,
+                            ))
+                        except Exception as e:
+                            logger.debug(f"Secondary {sample_id} abort result error: {e}")
+                            secondary_aborted += 1
+                            secondary_results.append(SecondaryOutput(
+                                sample_id=sample_id,
+                                output=None,
+                                status="aborted",
+                                tokens_generated=0,
+                            ))
+                        finally:
+                            secondary_refs.pop(ref, None)
+                            secondary_request_ids.pop(sample_id, None)
+
+                    # Force cancel any that didn't complete in time
+                    for ref in not_ready:
+                        sample_id = secondary_refs.get(ref)
+                        if sample_id is None:
+                            continue
+                        try:
+                            ray.cancel(ref, force=False)
+                        except Exception:
+                            pass
+                        secondary_aborted += 1
+                        secondary_results.append(SecondaryOutput(
+                            sample_id=sample_id,
+                            output=None,
+                            status="aborted",
+                            tokens_generated=0,
+                        ))
+                        secondary_refs.pop(ref, None)
+                        secondary_request_ids.pop(sample_id, None)
+
+                except Exception as e:
+                    logger.warning(f"Error waiting for aborted secondaries: {e}")
+                    # Fallback: cancel all remaining refs
+                    for ref, sample_id in list(secondary_refs.items()):
+                        try:
+                            ray.cancel(ref, force=False)
+                        except Exception:
+                            pass
+                        secondary_aborted += 1
+                        secondary_results.append(SecondaryOutput(
+                            sample_id=sample_id,
+                            output=None,
+                            status="aborted",
+                            tokens_generated=0,
+                        ))
 
         # Sleep servers
         if runahead_config.use_kv_cache_admission:

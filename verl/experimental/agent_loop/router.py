@@ -408,6 +408,9 @@ class RunaheadCentralRouter:
         best_load = self.load_threshold  # Start at threshold
         now = time.monotonic()
 
+        # Debug: print current loads
+        print(f"[pick_slack_server] threshold={self.load_threshold}, server_loads={self.server_load}")
+
         for idx in range(self.num_servers):
             load = self.server_load[idx]
             if load >= best_load:
@@ -427,6 +430,10 @@ class RunaheadCentralRouter:
             best_idx = idx
             best_load = load
 
+        if best_idx is None:
+            print(f"[pick_slack_server] REJECTED: all servers at capacity (loads >= {self.load_threshold})")
+        else:
+            print(f"[pick_slack_server] ADMITTED: server_idx={best_idx}, load={best_load}")
         return best_idx
 
     async def generate(
@@ -495,7 +502,8 @@ class RunaheadCentralRouter:
         # Track for abort BEFORE calling vLLM (critical for reliable abort)
         self._request_to_server[server_request_id] = server_idx
         self.server_load[server_idx] += 1
-
+        print(f"Admitted secondary request {server_request_id} to server_idx={server_idx}")
+        print(f"Current server loads: {self.server_load}")
         try:
             server = self.server_handles[server_idx]
             output = await server.generate.remote(

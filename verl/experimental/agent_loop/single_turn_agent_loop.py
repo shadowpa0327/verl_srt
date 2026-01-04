@@ -38,6 +38,10 @@ class SingleTurnAgentLoop(AgentLoopBase):
         messages = list(kwargs["raw_prompt"])
         image_data = copy.deepcopy((kwargs.get("multi_modal_data") or {}).get("image", None))
 
+        # Use per-sample max_tokens if provided, otherwise use config default
+        effective_response_length = int(kwargs.get("max_tokens", self.response_length))
+        sampling_params = {**sampling_params, "max_tokens": effective_response_length}
+
         metrics = {}
         request_id = uuid4().hex
 
@@ -70,11 +74,11 @@ class SingleTurnAgentLoop(AgentLoopBase):
 
         output = AgentLoopOutput(
             prompt_ids=prompt_ids,
-            response_ids=output.token_ids[: self.response_length],
-            response_mask=response_mask[: self.response_length],
-            response_logprobs=output.log_probs[: self.response_length] if output.log_probs else None,
+            response_ids=output.token_ids[:effective_response_length],
+            response_mask=response_mask[:effective_response_length],
+            response_logprobs=output.log_probs[:effective_response_length] if output.log_probs else None,
             routed_experts=(
-                output.routed_experts[: len(prompt_ids) + self.response_length]
+                output.routed_experts[: len(prompt_ids) + effective_response_length]
                 if output.routed_experts is not None
                 else None
             ),
