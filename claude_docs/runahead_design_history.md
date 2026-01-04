@@ -2,6 +2,8 @@
 
 This document archives the evolution of the runahead rollout design. For the **current design**, see `runahead_rollout_design.md`.
 
+> **Note (2026-01-02):** The base routing class has been refactored from per-worker `AsyncLLMServerManager` to a single `CentralRouter` Ray actor shared by all workers. This provides global load visibility essential for run-ahead. Historical references below describe the original per-worker architecture.
+
 ---
 
 ## Version Timeline

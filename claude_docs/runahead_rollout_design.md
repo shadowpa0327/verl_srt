@@ -4,10 +4,10 @@
 
 **In scope:**
 - Single-turn rollout with runahead speculation
-- Server-side admission control
-- Multi-worker coordination via StepBarrier
+- Router-side admission control (prototype)
+- Manager-level coordination via `ray.wait()`
 - Targeted abort (never abort_all)
-- Return `(primary_results, secondary_results)` to caller
+- Return `RunaheadResult(primary_outputs, secondary_outputs)` to caller
 
 **Out of scope (handled by caller):**
 - Result caching and reuse
@@ -134,7 +134,7 @@ t=0.00s  ┌─ PRIMARY BATCH STARTS ──────────────�
 t=0.30s  ├─ SHORT REQUESTS COMPLETING ────────────────────────────────────────
      │   │  • P0, P1 complete (16 tokens each)
      │   │  • Server: in_flight=6, headroom=8 → secondary_frac allows 2
-     │   │  • Pull S0, S1 from SecondaryWorkQueue
+     │   │  • Pop S0, S1 from the manager secondary queue
      │   │  • Launch S0, S1 (opportunistic)
      │   │
 t=0.50s  ├─ MORE PRIMARY COMPLETING ──────────────────────────────────────────
@@ -148,25 +148,25 @@ t=1.50s  ├─ LOCAL PRIMARY DONE ───────────────
      │   │  • S2, S3 still running (long outputs)
      │   │
      │  ╔═══════════════════════════════════════════════════════════════════════╗
-     │  ║ PHASE 2: Notify barrier                                              ║
+     │  ║ PHASE 2: Continue busy loop                                           ║
      │  ╚═══════════════════════════════════════════════════════════════════════╝
      │   │
-t=1.51s  ├─ MARK PRIMARY DONE ────────────────────────────────────────────────
-     │   │  • await step_barrier.mark_primary_done(step_id, worker_id)
-     │   │  • Other workers may still be running primary
+t=1.51s  ├─ SOME PRIMARY DONE ────────────────────────────────────────────────
+     │   │  • A primary chunk completes
+     │   │  • Other primary chunks may still be running
      │   │
      │  ╔═══════════════════════════════════════════════════════════════════════╗
-     │  ║ PHASE 3: Keep filling until global done                              ║
+     │  ║ PHASE 3: Keep filling until all primary done                         ║
      │  ╚═══════════════════════════════════════════════════════════════════════╝
      │   │
 t=1.52s  ├─ CONTINUE SECONDARY ───────────────────────────────────────────────
-     │   │  • while not await step_barrier.is_done(step_id):
+     │   │  • while primary still running:
      │   │  •     _try_launch_secondary()  # Pull more from queue
      │   │  •     _collect_secondary()     # Gather completed
      │   │  • S2 at 150/300 tokens, S3 at 120/300 tokens
      │   │
 t=2.80s  ├─ GLOBAL PRIMARY DONE ──────────────────────────────────────────────
-     │   │  • step_barrier.is_done() returns True
+     │   │  • primary_refs becomes empty
      │   │  • All workers have finished their primary batches
      │   │
      │  ╔═══════════════════════════════════════════════════════════════════════╗
@@ -175,7 +175,7 @@ t=2.80s  ├─ GLOBAL PRIMARY DONE ──────────────�
      │   │
 t=2.81s  ├─ TARGETED ABORT ───────────────────────────────────────────────────
      │   │  • running_ids = [S2.server_request_id, S3.server_request_id]
-     │   │  • await server_manager.abort_requests(running_ids)
+     │   │  • await router.abort_requests(running_ids)
      │   │  • S2: aborted at 250 tokens (partial)
      │   │  • S3: aborted at 220 tokens (partial)
      │   │
@@ -193,7 +193,7 @@ t=2.82s  └─ RESULTS ──────────────────�
          │  Bubble Utilization: ~85% (vs 0% without runahead)
 ```
 
-### Multi-Worker Timeline (2 Workers, StepBarrier Coordination)
+### Multi-Worker Timeline (Manager Busy Loop)
 
 ```
 Time ──────────────────────────────────────────────────────────────────────────>
@@ -213,11 +213,11 @@ Worker 0:                                    Worker 1:
 │        ▲                           │       │                                    │
 │        │                           │       │                                    │
 │    Pulled from                     │       │                                    │
-│    SecondaryWorkQueue              │       │                                    │
+│    manager queue                   │       │                                    │
 │                                    │       │                                    │
 │ t=1.0s: LOCAL PRIMARY DONE         │       │                                    │
 │         ▼                          │       │                                    │
-│ PHASE 2: mark_primary_done()       │       │                                    │
+│ PHASE 2: primary chunk done        │       │                                    │
 │         │                          │       │                                    │
 │         ▼                          │       │                                    │
 │ PHASE 3: Keep filling              │       │                                    │
@@ -227,9 +227,9 @@ Worker 0:                                    Worker 1:
 │                                    │       │                                    │
 │ (Worker 0 keeps working on sec.)   │       │ t=2.8s: LOCAL PRIMARY DONE         │
 │                                    │       │         ▼                          │
-│                                    │       │ PHASE 2: mark_primary_done()       │
+│                                    │       │ PHASE 2: primary chunk done        │
 │                                    │       │                                    │
-│ t=2.8s: is_done() → TRUE           │       │ t=2.8s: is_done() → TRUE           │
+│ t=2.8s: all primary done           │       │ t=2.8s: all primary done           │
 │         ▼                          │       │         ▼                          │
 │ PHASE 4: Abort S2, S3              │       │ PHASE 4: (no secondary running)    │
 │                                    │       │                                    │
@@ -239,26 +239,23 @@ Worker 0:                                    Worker 1:
          │              │
          ▼              ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                            StepBarrier                                       │
+│                         Manager Busy Loop                                    │
 │  ┌───────────────────────────────────────────────────────────────────────┐  │
-│  │  step_id: "step_42"                                                   │  │
-│  │  num_workers: 2                                                       │  │
-│  │  completed: {0, 1}  ← Both workers done                               │  │
-│  │  done_event: SET                                                      │  │
+│  │  primary_refs: empty  ← All primaries done                             │  │
+│  │  secondary_refs: {S2, S3} (may still be running)                       │  │
 │  └───────────────────────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────────────────┘
 
 Timeline:
 ─────────────────────────────────────────────────────────────────────────────────
 t=0.0s   │ Both workers start primary batch
-t=0.3s   │ Worker 0: P0,P1 done → starts S0,S1 (pulls from shared queue)
+t=0.3s   │ Worker 0: P0,P1 done → starts S0,S1 (manager queue)
 t=0.5s   │ Worker 0: P2,P3 done → starts S2,S3
-t=1.0s   │ Worker 0: All primary done → PHASE 2 (mark_primary_done)
-         │ Worker 0: Enters PHASE 3 (keep filling)
+t=1.0s   │ Worker 0: All primary done (manager observes primary ref done)
+         │ Manager keeps drip-feeding secondary while any primary remains
 t=1.5s   │ Worker 0: S0,S1 complete
-t=2.8s   │ Worker 1: All primary done → PHASE 2 (mark_primary_done)
-         │ StepBarrier: done_event.set() (all workers done)
-         │ Both workers: is_done() → True → PHASE 4
+t=2.8s   │ Worker 1: All primary done (manager observes primary ref done)
+         │ Manager sees all primary done → PHASE 4
 t=2.81s  │ Worker 0: Aborts S2,S3 by server_request_id
 ─────────────────────────────────────────────────────────────────────────────────
 ```
@@ -398,11 +395,11 @@ class RunaheadConfig:
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │                          AgentLoopManager                                     │
 │  ┌────────────────────────────────────────────────────────────────────────┐  │
-│  │  1. Create StepBarrier for this step                                   │  │
+│  │  1. Configure router threshold                                         │  │
 │  │  2. Split primary_prompts across workers                               │  │
-│  │  3. Create SecondaryWorkQueue from secondary_prompts                   │  │
-│  │  4. Dispatch to workers with runahead enabled                          │  │
-│  │  5. Collect and merge results                                          │  │
+│  │  3. Build local secondary queue from secondary_prompts                 │  │
+│  │  4. Busy loop: ray.wait() + drip-feed secondary via router             │  │
+│  │  5. Abort/cancel remaining secondary, then merge results               │  │
 │  └────────────────────────────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────────────────────────┘
                                     │
@@ -424,24 +421,25 @@ class RunaheadConfig:
 └─────────┬──────────┘  └─────────┬──────────┘  └─────────┬──────────┘
           │                       │                       │
           │    ┌──────────────────┴──────────────────┐    │
-          │    │           StepBarrier               │    │
-          │    │  (Ray actor - coordination)         │    │
+          │    │        Manager Busy Loop            │    │
+          │    │  (local coordination)               │    │
           │    │                                     │    │
-          │    │  • start(step_id, num_workers)      │    │
-          │    │  • mark_primary_done(step_id, wid)  │    │
-          │    │  • is_done(step_id) → bool          │    │
+          │    │  • ray.wait(primary+secondary)      │    │
+          │    │  • drip-feed secondary via router   │    │
+          │    │  • abort remaining secondary        │    │
           │    └──────────────────┬──────────────────┘    │
           │                       │                       │
           └───────────────────────┼───────────────────────┘
                                   │
                                   ▼
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│                    AsyncLLMServerManager (Extended)                           │
+│                    CentralRouter (Extended for Runahead)                      │
 │  ┌────────────────────────────────────────────────────────────────────────┐  │
 │  │  Primary routing: LRU-based sticky sessions (existing)                 │  │
 │  │  Secondary routing: Round-robin (don't pollute LRU cache)              │  │
 │  │  abort_requests([ids]): Targeted abort by server_request_id           │  │
 │  │  _request_to_server: dict[server_request_id → server_idx]             │  │
+│  │  server_load: Global visibility of active requests per server         │  │
 │  └────────────────────────────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────────────────────────┘
                                   │
@@ -466,122 +464,31 @@ class RunaheadConfig:
 
 ## Component Specifications
 
-### 1. StepBarrier
+### 1. RunaheadCentralRouter
 
-```python
-@ray.remote
-class StepBarrier:
-    """Coordinates multi-worker primary completion."""
+Extension to `CentralRouter` with:
 
-    def __init__(self):
-        self.steps: dict[str, StepState] = {}
-
-    async def start(self, step_id: str, num_workers: int):
-        """Initialize barrier for a step."""
-        self.steps[step_id] = StepState(
-            num_workers=num_workers,
-            completed=set(),
-            done_event=asyncio.Event(),
-        )
-
-    async def mark_primary_done(self, step_id: str, worker_id: int):
-        """Worker reports primary completion."""
-        state = self.steps[step_id]
-        state.completed.add(worker_id)
-        if len(state.completed) >= state.num_workers:
-            state.done_event.set()
-
-    async def is_done(self, step_id: str) -> bool:
-        """Check if all workers done (non-blocking)."""
-        return self.steps[step_id].done_event.is_set()
-
-    async def wait_done(self, step_id: str, timeout: float = None) -> bool:
-        """Wait for all workers to complete."""
-        try:
-            await asyncio.wait_for(
-                self.steps[step_id].done_event.wait(),
-                timeout=timeout
-            )
-            return True
-        except asyncio.TimeoutError:
-            return False
-
-    async def cleanup(self, step_id: str):
-        """Remove step state."""
-        self.steps.pop(step_id, None)
-```
-
-### 2. SecondaryWorkQueue
-
-Shared queue that workers pull from to get secondary work:
-
-```python
-@ray.remote
-class SecondaryWorkQueue:
-    """Distributes secondary work to workers."""
-
-    def __init__(self, secondary_prompts: list[PromptData]):
-        self.queue = asyncio.Queue()
-        for prompt in secondary_prompts:
-            self.queue.put_nowait(SecondaryWorkItem(
-                sample_id=prompt.sample_id,
-                prompt_ids=prompt.prompt_ids,
-                max_tokens=prompt.max_tokens,
-            ))
-        self.results: dict[str, SecondaryOutput] = {}
-        self._lock = asyncio.Lock()
-
-    async def get_work(self) -> Optional[SecondaryWorkItem]:
-        """Get next secondary work item (non-blocking)."""
-        try:
-            return self.queue.get_nowait()
-        except asyncio.QueueEmpty:
-            return None
-
-    async def requeue(self, item: SecondaryWorkItem):
-        """Requeue rejected item for retry."""
-        if item.retry_count < item.max_retries:
-            item.retry_count += 1
-            await self.queue.put(item)
-
-    async def submit_result(self, sample_id: str, result: SecondaryOutput):
-        """Submit completed/aborted result."""
-        async with self._lock:
-            self.results[sample_id] = result
-
-    async def get_all_results(self) -> dict[str, SecondaryOutput]:
-        """Get all collected results."""
-        async with self._lock:
-            return dict(self.results)
-```
-
-### 3. RunaheadServerManager
-
-Extension to `AsyncLLMServerManager` with:
-
-- **Secondary routing**: Round-robin (don't pollute primary LRU cache)
+- **Secondary admission**: Only admit when `server_load < load_threshold`
+- **Secondary routing**: Least-loaded server (doesn't touch primary sticky session cache)
 - **Request tracking**: Maps `server_request_id → server_idx` for targeted abort
-- **Request kind plumbing**: Sets `sampling_params["_verl_request_kind"] = "secondary"`;
-  the admission wrapper pops this key before forwarding to vLLM
 - **Targeted abort**: Groups requests by server, issues per-id `abort_request()` calls
   in parallel (vLLM exposes per-request abort, not batch)
 
-### 4. RunaheadWorker (4-Phase Execution)
+### 2. AgentLoopManager Busy Loop
 
-Each worker executes the 4-phase pattern (see timeline diagrams above):
+The manager executes the busy loop (see timeline diagrams above):
 
 1. **Phase 1**: Run primary batch + opportunistically launch secondary when slack detected
-2. **Phase 2**: When local primary done, notify `StepBarrier.mark_primary_done()`
-3. **Phase 3**: Keep launching secondary until `StepBarrier.is_done()` returns true
-4. **Phase 4**: Abort remaining secondary by `server_request_id`, collect partial results
+2. **Phase 2**: Keep launching secondary while any primary is still running
+3. **Phase 3**: Abort remaining secondary by `server_request_id`, collect partial results
 
 Key behaviors:
 - Polls every ~50ms to check for completed primary and available slack
-- Pulls secondary work from shared `SecondaryWorkQueue`
+- Pulls secondary work from a manager-local queue
 - Tracks `sample_id → (task, server_request_id)` for targeted abort
 - Requeues rejected secondary for retry (up to `max_retries`)
 
-### 5. Server-Side Admission
+### 3. Server-Side Admission
 
 #### Current Prototype: Ray Wrapper Pattern
 
@@ -619,7 +526,7 @@ scheduler integration:
 ## Sequence Diagram
 
 ```
-Caller          Manager         StepBarrier      Worker[0..N]       ServerManager     vLLM Server
+Caller          Manager          Worker[0..N]            Router              vLLM Server
   │                │                │                │                    │                │
   │ generate_with_ │                │                │                    │                │
   │ runahead(      │                │                │                    │                │
@@ -632,7 +539,7 @@ Caller          Manager         StepBarrier      Worker[0..N]       ServerManage
   │                │   num_workers) │                │                    │                │
   │                │───────────────>│                │                    │                │
   │                │                │                │                    │                │
-  │                │ create SecondaryWorkQueue(secondary_prompts)         │                │
+  │                │ build secondary queue (local)                        │                │
   │                │─────────────────────────────────────────────────────>│                │
   │                │                │                │                    │                │
   │                │ run_with_runahead(primary_chunk, step_id, ...)       │                │
@@ -673,7 +580,7 @@ Caller          Manager         StepBarrier      Worker[0..N]       ServerManage
   │                │                │    │ global done         │          │               │
   │                │                │    └──────────┬──────────┘          │               │
   │                │                │                │                    │               │
-  │                │                │ is_done()?     │                    │               │
+  │                │                │ primary_done()? │                    │               │
   │                │                │<───────────────│                    │               │
   │                │                │───────────────>│ (continue sec.)    │               │
   │                │                │                │                    │               │
@@ -702,46 +609,35 @@ Caller          Manager         StepBarrier      Worker[0..N]       ServerManage
 
 ```
 verl/experimental/agent_loop/
-├── agent_loop.py                    # Existing (minimal changes)
-├── runahead/
-│   ├── __init__.py
-│   ├── config.py                    # RunaheadConfig
-│   ├── barrier.py                   # StepBarrier Ray actor
-│   ├── work_queue.py                # SecondaryWorkQueue Ray actor
-│   ├── server_manager.py            # RunaheadServerManager
-│   ├── worker_mixin.py              # RunaheadWorkerMixin
-│   └── types.py                     # SecondaryOutput, RunaheadResult, etc.
-
-verl/workers/rollout/vllm_rollout/
-└── vllm_async_server.py             # Add: in_flight counters, should_admit_secondary, abort_requests
+├── agent_loop.py                    # Add: generate_sequences_with_runahead() (manager busy loop)
+├── router.py                        # Add: RunaheadCentralRouter (secondary admission + targeted abort)
+└── runahead/
+    ├── __init__.py
+    ├── config.py                    # RunaheadConfig
+    ├── types.py                     # SecondaryOutput, RunaheadResult, etc.
 ```
 
 ---
 
 ## Implementation Checklist
 
-### Phase 1: Server Infrastructure
-- [ ] Add `in_flight_total`, `in_flight_secondary` counters to vLLMHttpServer
-- [ ] Add `meta` parameter to `generate()` with `kind` field
-- [ ] Implement `should_admit_secondary()` logic
-- [ ] Return `stop_reason="rejected"` when capacity full
-- [ ] Implement `abort_requests([ids])` method
+> Note: The current prototype uses a **manager-level Ray-native busy loop** (`ray.wait`) plus a shared
+> **CentralRouter extension** for secondary admission + targeted abort. Server-side admission inside
+> `vllm_async_server.py` is deferred.
 
-### Phase 2: Coordination
-- [ ] Create `StepBarrier` Ray actor
-- [ ] Create `SecondaryWorkQueue` Ray actor
-- [ ] Add tests for barrier coordination
+### Phase 1: Router Infrastructure
+- [ ] Add `RunaheadCentralRouter.generate_secondary(server_request_id, ...)` with admission control
+- [ ] Add `RunaheadCentralRouter.abort_requests([ids])` for targeted abort
+- [ ] Add `RunaheadCentralRouter.set_load_threshold()` for per-run configuration
 
 ### Phase 3: Client Components
 - [ ] Create `RunaheadConfig` dataclass
-- [ ] Create `RunaheadServerManager` with secondary routing
-- [ ] Create `RunaheadWorkerMixin` with 4-phase execution
 - [ ] Create result types: `SecondaryOutput`, `RunaheadResult`
 
 ### Phase 4: Manager Integration
-- [ ] Add `generate_sequences_with_runahead()` to AgentLoopManager
-- [ ] Wire up barrier and work queue
-- [ ] Add metrics collection
+- [ ] Add `generate_sequences_with_runahead()` to AgentLoopManager (busy loop + drip-feed)
+- [ ] Preserve primary output order deterministically (match `generate_sequences()`)
+- [ ] Abort/cancel remaining secondary when primary completes
 
 ### Phase 5: Testing
 - [ ] Unit tests for each component
@@ -754,7 +650,7 @@ verl/workers/rollout/vllm_rollout/
 
 1. **Primary never harmed**: Secondary cannot slow down or affect primary
 2. **Targeted abort only**: Never `abort_all_requests()` in multi-worker
-3. **Server is truth**: Global capacity tracked in server, not workers
+3. **Single source of truth**: Admission is enforced in one shared component (router for prototype; server for end-state)
 4. **Bounded**: Max concurrent, max tokens, max retries all capped
 
 ---

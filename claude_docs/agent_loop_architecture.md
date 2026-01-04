@@ -29,8 +29,8 @@ This document explains the complete architecture of VERL's agent loop system wit
 │                                           ▼                                              │
 │  ┌───────────────────────────────────────────────────────────────────────────────────┐  │
 │  │ ROUTING LAYER                                                                      │  │
-│  │   AsyncLLMServerManager (per worker)                                               │  │
-│  │   - Least-requests load balancing (min-heap)                                       │  │
+│  │   CentralRouter (single Ray actor, shared by all workers)                          │  │
+│  │   - Global least-requests load balancing (min-heap)                                │  │
 │  │   - Sticky sessions for prefix caching (LRU cache)                                 │  │
 │  │   - Routes requests to vLLM servers                                                │  │
 │  └───────────────────────────────────────────────────────────────────────────────────┘  │
@@ -65,9 +65,9 @@ This document explains the complete architecture of VERL's agent loop system wit
 │                           CLASS RELATIONSHIPS                                │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
-│  AsyncLLMServerManager              (Load balancing, server routing)         │
+│  CentralRouter (@ray.remote)        (Global load balancing, server routing)  │
 │       ↑                                                                      │
-│       └── Used by: AgentLoopBase, AgentLoopWorkerBase                        │
+│       └── Used by: AgentLoopBase (via self.router.generate.remote())         │
 │                                                                              │
 │  AgentLoopBase (ABC)                (Abstract interface for agent logic)     │
 │       │                                                                      │
@@ -80,6 +80,7 @@ This document explains the complete architecture of VERL's agent loop system wit
 │                                                                              │
 │  AgentLoopManager                   (Top-level orchestrator)                 │
 │       │                                                                      │
+│       ├── Creates: CentralRouter (single Ray actor)                          │
 │       ├── Creates: AgentLoopWorker pool (CPU)                                │
 │       └── Creates: vLLMHttpServer replicas (GPU)                             │
 │                                                                              │
@@ -90,9 +91,9 @@ This document explains the complete architecture of VERL's agent loop system wit
 
 | Layer | Class | Resource | Responsibility |
 |-------|-------|----------|----------------|
-| **Orchestration** | AgentLoopManager | - | Worker pool, batch distribution, lifecycle |
+| **Orchestration** | AgentLoopManager | - | Worker pool, router creation, batch distribution, lifecycle |
 | **Worker** | AgentLoopWorker | CPU | Async task creation, agent instantiation |
-| **Routing** | AsyncLLMServerManager | CPU | Load balancing, sticky sessions |
+| **Routing** | CentralRouter | CPU (Ray actor) | Global load balancing, sticky sessions |
 | **Server** | vLLMHttpServer | CPU | AsyncLLM scheduling, ZMQ dispatch |
 | **GPU** | vLLMAsyncRollout | GPU | Model weights, forward pass |
 
@@ -127,10 +128,10 @@ This document explains the complete architecture of VERL's agent loop system wit
                                     │
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  AsyncLLMServerManager._choose_server()                                      │
+│  CentralRouter.generate() → _choose_server()                                 │
 │  ─────────────────────────────────────────────────────────────────────────  │
 │  - Sticky session check (LRU cache)                                          │
-│  - Min-heap load balancing                                                   │
+│  - Min-heap load balancing (global view across all workers)                  │
 │  - Returns least-loaded vLLM server                                          │
 └─────────────────────────────────────────────────────────────────────────────┘
                                     │
@@ -154,9 +155,9 @@ This document explains the complete architecture of VERL's agent loop system wit
 
 ---
 
-## Many-to-Many Architecture
+## Centralized Routing Architecture
 
-Multiple CPU workers can send requests to multiple GPU servers concurrently:
+All CPU workers route requests through a single CentralRouter that provides global load balancing:
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────────────┐
@@ -173,21 +174,26 @@ Multiple CPU workers can send requests to multiple GPU servers concurrently:
 │  │           │                  │                  │                  │           │  │
 │  └───────────┼──────────────────┼──────────────────┼──────────────────┼───────────┘  │
 │              │                  │                  │                  │              │
-│              │    ┌─────────────┴──────────────────┴─────────────┐    │              │
-│              │    │                                              │    │              │
-│              │    │         Many-to-Many Connections             │    │              │
-│              │    │    (Each worker can reach any server)        │    │              │
-│              │    │                                              │    │              │
-│              │    └─────────────┬──────────────────┬─────────────┘    │              │
+│              └──────────────────┼──────────────────┼──────────────────┘              │
+│                                 │                  │                                 │
+│                        ┌────────┴──────────────────┴────────┐                        │
+│                        │         CentralRouter              │                        │
+│                        │      (Single Ray Actor)            │                        │
+│                        │  - Global load visibility          │                        │
+│                        │  - Least-requests routing          │                        │
+│                        │  - Sticky sessions (LRU)           │                        │
+│                        └────────┬──────────────────┬────────┘                        │
+│                                 │                  │                                 │
+│              ┌──────────────────┼──────────────────┼──────────────────┐              │
 │              │                  │                  │                  │              │
 │  ┌───────────┼──────────────────┼──────────────────┼──────────────────┼───────────┐  │
 │  │           │                  │                  │                  │           │  │
 │  │    ┌──────┴───────┐   ┌──────┴───────┐   ┌──────┴───────┐   ┌──────┴───────┐   │  │
 │  │    │   Worker 0   │   │   Worker 1   │   │   Worker 2   │   │   Worker 3   │   │  │
-│  │    │ ┌──────────┐ │   │ ┌──────────┐ │   │ ┌──────────┐ │   │ ┌──────────┐ │   │  │
-│  │    │ │ AsyncLLM │ │   │ │ AsyncLLM │ │   │ │ AsyncLLM │ │   │ │ AsyncLLM │ │   │  │
-│  │    │ │ ServerMgr│ │   │ │ ServerMgr│ │   │ │ ServerMgr│ │   │ │ ServerMgr│ │   │  │
-│  │    │ └──────────┘ │   │ └──────────┘ │   │ └──────────┘ │   │ └──────────┘ │   │  │
+│  │    │              │   │              │   │              │   │              │   │  │
+│  │    │ self.router  │   │ self.router  │   │ self.router  │   │ self.router  │   │  │
+│  │    │  .generate   │   │  .generate   │   │  .generate   │   │  .generate   │   │  │
+│  │    │  .remote()   │   │  .remote()   │   │  .remote()   │   │  .remote()   │   │  │
 │  │    │    [CPU]     │   │    [CPU]     │   │    [CPU]     │   │    [CPU]     │   │  │
 │  │    └──────────────┘   └──────────────┘   └──────────────┘   └──────────────┘   │  │
 │  │                                                                                │  │
@@ -197,9 +203,10 @@ Multiple CPU workers can send requests to multiple GPU servers concurrently:
 ```
 
 **Key Properties:**
-- Each worker has its own `AsyncLLMServerManager` with handles to ALL servers
-- Workers make independent load balancing decisions (decentralized)
-- No central bottleneck or coordination required
+- Single `CentralRouter` Ray actor shared by all workers
+- Global visibility of server loads enables optimal load balancing
+- Essential for run-ahead rollout strategy (needs global view of queue depths)
+- Workers call `self.router.generate.remote()` directly
 
 ---
 
@@ -208,30 +215,46 @@ Multiple CPU workers can send requests to multiple GPU servers concurrently:
 ### Min-Heap Algorithm
 
 ```python
-class AsyncLLMServerManager:
-    def __init__(self, config, server_handles, max_cache_size=10000):
-        # Min-heap: [request_count, server_index, server_handle]
-        self.weighted_servers = [[0, idx, server] for idx, server in enumerate(server_handles)]
-        heapq.heapify(self.weighted_servers)
+@ray.remote
+class CentralRouter:
+    def __init__(self, server_handles, max_cache_size=10000):
+        self.server_handles = server_handles
 
-        # LRU cache for sticky sessions
+        # Min-heap: [num_sessions, server_index, server_handle]
+        self.weighted_serveres = [[0, idx, server] for idx, server in enumerate(server_handles)]
+        heapq.heapify(self.weighted_serveres)
+
+        # LRU cache for sticky sessions (stores server_idx only)
         self.request_id_to_server = LRUCache(maxsize=max_cache_size)
+
+        # Track active load per server
+        self.server_load = {i: 0 for i in range(len(server_handles))}
 
     def _choose_server(self, request_id: str):
         # 1. Check sticky session cache
         if request_id in self.request_id_to_server:
-            return self.request_id_to_server[request_id]
+            server_idx = self.request_id_to_server[request_id]
+            return server_idx, self.server_handles[server_idx]
 
         # 2. Pick server with minimum load (heap root)
-        _, _, server = self.weighted_servers[0]
+        _, server_idx, server = self.weighted_serveres[0]
 
         # 3. Increment and rebalance heap
-        self.weighted_servers[0][0] += 1
-        heapq.heapreplace(self.weighted_servers, self.weighted_servers[0])
+        self.weighted_serveres[0][0] += 1
+        heapq.heapreplace(self.weighted_serveres, self.weighted_serveres[0])
 
         # 4. Cache for sticky sessions
-        self.request_id_to_server[request_id] = server
-        return server
+        self.request_id_to_server[request_id] = server_idx
+        return server_idx, server
+
+    async def generate(self, request_id, *, prompt_ids, sampling_params, ...):
+        server_idx, server = self._choose_server(request_id)
+        self.server_load[server_idx] += 1
+        try:
+            output = await server.generate.remote(...)
+            return output
+        finally:
+            self.server_load[server_idx] -= 1
 ```
 
 **Complexity:** O(log N) per request, where N = number of servers
@@ -326,7 +349,7 @@ class ToolAgentLoop(AgentLoopBase): ...
 
 # Dynamic instantiation in AgentLoopWorkerBase
 agent_loop_class = get_agent_loop_class(config.agent.agent_name)
-agent_loop = agent_loop_class(config, server_manager, tokenizer, ...)
+agent_loop = agent_loop_class(config, router, tokenizer, ...)
 output = await agent_loop.run(sampling_params, **kwargs)
 ```
 
@@ -357,8 +380,9 @@ max_concurrency = num_workers * samples_per_worker * turns_per_sample
 Custom implementations at each layer:
 
 ```python
-# Custom server manager
-class MyServerManager(AsyncLLMServerManager):
+# Custom router (extend CentralRouter for run-ahead, etc.)
+@ray.remote
+class MyRouter(CentralRouter):
     async def generate_with_runahead(...): ...
 
 # Custom worker
@@ -387,12 +411,12 @@ actor_rollout_ref:
 
 | Class | File | Lines |
 |-------|------|-------|
-| `AsyncLLMServerManager` | `verl/experimental/agent_loop/agent_loop.py` | 54-118 |
-| `AgentLoopBase` | `verl/experimental/agent_loop/agent_loop.py` | 186-223 |
-| `AgentLoopWorkerBase` | `verl/experimental/agent_loop/agent_loop.py` | 245-664 |
-| `AgentLoopWorker` | `verl/experimental/agent_loop/agent_loop.py` | 668-680 |
-| `AgentLoopManager` | `verl/experimental/agent_loop/agent_loop.py` | 705-871 |
-| `register()` | `verl/experimental/agent_loop/agent_loop.py` | 122-135 |
+| `CentralRouter` | `verl/experimental/agent_loop/router.py` | 40-170 |
+| `AgentLoopBase` | `verl/experimental/agent_loop/agent_loop.py` | 120-160 |
+| `AgentLoopWorkerBase` | `verl/experimental/agent_loop/agent_loop.py` | 178-600 |
+| `AgentLoopWorker` | `verl/experimental/agent_loop/agent_loop.py` | 596-610 |
+| `AgentLoopManager` | `verl/experimental/agent_loop/agent_loop.py` | 630-800 |
+| `register()` | `verl/experimental/agent_loop/agent_loop.py` | 55-70 |
 | `AgentLoopConfig` | `verl/workers/config/rollout.py` | 68+ |
 
 ### Agent Implementations
@@ -423,10 +447,7 @@ actor_rollout_ref:
 
 ### Runahead Extensions
 
-| Class | File | Lines |
-|-------|------|-------|
-| `AsyncLLMServerManagerWithRunahead` | `verl/experimental/agent_loop/runahead.py` | 203-423 |
-| `RunaheadController` | `verl/experimental/agent_loop/runahead.py` | 431-582 |
+*Note: Run-ahead functionality is being developed. CentralRouter provides the global visibility needed for run-ahead by tracking `server_load` across all workers.*
 
 ---
 
