@@ -603,6 +603,34 @@ class RunaheadCentralRouter:
         """Get total number of primary requests processed."""
         return self.total_requests
 
+    async def wait_for_total_requests(
+        self,
+        *,
+        min_total_requests: int,
+        poll_interval_s: float = 0.05,
+        timeout_s: Optional[float] = None,
+    ) -> dict[str, Any]:
+        """Wait until total_requests reaches min_total_requests.
+
+        This is used by the Manager to avoid a startup race where secondaries get
+        admitted before any primary request has reached the router (so server_load
+        is still zero and admission is overly optimistic).
+
+        Args:
+            min_total_requests: Target total primary request count.
+            poll_interval_s: Sleep interval between checks (seconds).
+            timeout_s: Optional timeout; if None, wait indefinitely.
+
+        Returns:
+            Dict with {"ready": bool, "total_requests": int}.
+        """
+        start_s = time.monotonic()
+        while self.total_requests < min_total_requests:
+            if timeout_s is not None and (time.monotonic() - start_s) >= timeout_s:
+                return {"ready": False, "total_requests": self.total_requests}
+            await asyncio.sleep(poll_interval_s)
+        return {"ready": True, "total_requests": self.total_requests}
+
     def get_runahead_stats(self) -> dict[str, int]:
         """Get runahead-specific statistics.
 

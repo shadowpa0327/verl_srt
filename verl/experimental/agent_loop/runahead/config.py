@@ -40,6 +40,9 @@ class RunaheadConfig:
         require_fresh_workload: If True, reject secondaries until fresh workload metrics exist.
         abort_grace_s: After issuing abort_requests(), wait up to this many seconds for
             in-flight secondary tasks to return partial outputs before force-canceling.
+        wait_for_primary_start: If True, delay secondary submission until at least one
+            primary request has reached the router (prevents a startup race where
+            server_load doesn't yet reflect primary workload).
     """
 
     enabled: bool = False
@@ -57,3 +60,6 @@ class RunaheadConfig:
 
     # Abort handling: allow aborted secondaries to return partial outputs.
     abort_grace_s: float = 1.0
+
+    # Admission warm-up: avoid starting secondaries before primaries register load.
+    wait_for_primary_start: bool = True

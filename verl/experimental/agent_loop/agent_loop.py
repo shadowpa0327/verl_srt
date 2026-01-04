@@ -917,11 +917,26 @@ class AgentLoopManager:
             print_interval_s = 1.0
         next_print_s = time.monotonic()
 
+        primary_started = not runahead_config.wait_for_primary_start
+        primary_start_ref: Optional[ray.ObjectRef] = None
+        primary_total_start = 0
+        if not primary_started and secondary_queue:
+            # Note: capture baseline BEFORE launching primaries to avoid starving the router actor
+            # while workers are starting up and issuing their first router.generate() calls.
+            primary_total_start = ray.get(self.router.get_total_requests.remote())
+
         primary_chunks = primary_prompts.chunk(len(self.agent_loop_workers))
         primary_results_by_worker: list[Optional[DataProto]] = [None] * len(primary_chunks)
         for i, (worker, chunk) in enumerate(zip(self.agent_loop_workers, primary_chunks, strict=True)):
             ref = worker.generate_sequences.remote(chunk)
             primary_refs[ref] = i
+
+        if not primary_started and secondary_queue:
+            primary_start_ref = self.router.wait_for_total_requests.remote(
+                min_total_requests=primary_total_start + 1,
+                poll_interval_s=runahead_config.poll_interval_s,
+                timeout_s=None,
+            )
 
         def _maybe_print_server_state(tag: str, *, force: bool = False) -> None:
             nonlocal next_print_s
@@ -951,6 +966,8 @@ class AgentLoopManager:
         while primary_refs:
             # Combine all refs
             all_refs = list(primary_refs.keys()) + list(secondary_refs.keys())
+            if primary_start_ref is not None:
+                all_refs.append(primary_start_ref)
 
             # Ray-native wait with timeout
             ready, _ = ray.wait(
@@ -961,6 +978,15 @@ class AgentLoopManager:
 
             # Process completed refs
             for ref in ready:
+                if primary_start_ref is not None and ref == primary_start_ref:
+                    try:
+                        start_info = ray.get(primary_start_ref)
+                        primary_started = bool(start_info.get("ready", False)) if isinstance(start_info, dict) else True
+                    except Exception:
+                        primary_started = True
+                    primary_start_ref = None
+                    continue
+
                 if ref in primary_refs:
                     # Primary completed
                     worker_idx = primary_refs.pop(ref)
@@ -1005,7 +1031,13 @@ class AgentLoopManager:
             if not primary_refs:
                 break
 
-            # Drip-feed: submit secondary if capacity available
+            # Drip-feed: submit secondary if capacity available.
+            # Strict gating: don't start any secondaries until at least one primary request
+            # has reached the router, otherwise server_load is still zero and admission is
+            # overly optimistic (can starve primaries at startup).
+            if not primary_started:
+                continue
+
             while (secondary_queue and
                    len(secondary_refs) < runahead_config.max_secondary_concurrent):
 
@@ -1024,6 +1056,13 @@ class AgentLoopManager:
                 )
                 secondary_refs[ref] = work_item.sample_id
                 secondary_started += 1
+
+        if primary_start_ref is not None:
+            try:
+                ray.cancel(primary_start_ref, force=False)
+            except Exception:
+                pass
+            primary_start_ref = None
 
         # Drain any already-completed secondary results without blocking before aborting the rest.
         if secondary_refs:

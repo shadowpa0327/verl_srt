@@ -295,6 +295,7 @@ def test_manager_busy_loop_e2e() -> None:
         poll_interval_s=0.01,
         max_retries=0,
         max_secondary_concurrent=4,
+        wait_for_primary_start=False,
     )
     _log(
         "  - Config:"
@@ -365,6 +366,7 @@ def test_manager_mixed_secondary_max_tokens() -> None:
         poll_interval_s=0.01,
         max_retries=0,
         max_secondary_concurrent=2,
+        wait_for_primary_start=False,
     )
 
     result = manager.generate_sequences_with_runahead(primary_prompts, secondary_prompts, cfg)
