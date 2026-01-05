@@ -860,6 +860,7 @@ class AgentLoopManager:
             raise KeyError("secondary_prompts.batch must contain 'input_ids' or 'prompts'")
         secondary_attention_mask = secondary_prompts.batch.get("attention_mask")
         secondary_sampling_params = secondary_prompts.non_tensor_batch.get("sampling_params")
+        secondary_max_tokens = secondary_prompts.non_tensor_batch.get("max_tokens")
 
         for i in range(len(secondary_prompts)):
             sample_id = f"secondary_{i}"
@@ -882,6 +883,15 @@ class AgentLoopManager:
                     raw_params = None
                 if isinstance(raw_params, dict):
                     sampling_params = dict(raw_params)
+
+            # Add per-sample max_tokens if provided (similar to primary agent loop)
+            if secondary_max_tokens is not None:
+                try:
+                    max_tokens_value = secondary_max_tokens[i]
+                    if max_tokens_value is not None:
+                        sampling_params["max_tokens"] = int(max_tokens_value)
+                except Exception:
+                    pass
 
             work_item = SecondaryWorkItem(
                 sample_id=sample_id,
