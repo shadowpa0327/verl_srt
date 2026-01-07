@@ -786,78 +786,30 @@ class AgentLoopManager:
 
         return timing
 
-    def generate_sequences_with_runahead(
+    def _build_secondary_work_items(
         self,
-        primary_prompts: DataProto,
-        secondary_prompts: DataProto,
-        runahead_config: Optional["RunaheadConfig"] = None,
-    ) -> "RunaheadResult":
-        """Generate sequences with run-ahead speculation using Ray-native busy loop.
-
-        This method runs the primary batch while opportunistically executing
-        secondary (future batch) requests to fill GPU bubbles. Uses ray.wait()
-        for true interleaving of primary and secondary execution.
+        secondary_prompts: "DataProto",
+    ) -> list["SecondaryWorkItem"]:
+        """Convert DataProto to list of SecondaryWorkItem for runahead.
 
         Args:
-            primary_prompts: Current batch prompts (must complete).
-            secondary_prompts: Future batch prompts (opportunistic, may be aborted).
-            runahead_config: Runahead configuration. If None, uses defaults.
+            secondary_prompts: Future batch prompts as DataProto.
 
         Returns:
-            RunaheadResult containing primary outputs, secondary outputs, and metrics.
+            List of SecondaryWorkItem ready for router submission.
         """
-        from collections import deque
-        import json
-        import time
-        from uuid import uuid4
+        from typing import Any
 
-        from verl.experimental.agent_loop.runahead import (
-            RunaheadConfig,
-            RunaheadMetrics,
-            RunaheadResult,
-            SecondaryOutput,
-            SecondaryWorkItem,
-        )
+        from verl.experimental.agent_loop.runahead import SecondaryWorkItem
 
-        # Use default config if not provided
-        if runahead_config is None:
-            runahead_config = RunaheadConfig(enabled=True)
-
-        # Respect config toggle for callers that share a unified codepath.
-        if not runahead_config.enabled:
-            primary_output = self.generate_sequences(primary_prompts)
-            return RunaheadResult(primary_outputs=primary_output)
-
-        # Ensure router admission threshold matches this run
-        # (router is shared by all workers, so update it once per call)
-        ray.get(self.router.set_load_threshold.remote(runahead_config.load_threshold))
-
-        # Wake up servers
-        self.wake_up()
-        if self.reward_model_manager:
-            self.reward_model_manager.wake_up()
-        ray.get(
-            self.router.configure_workload_polling.remote(
-                enabled=runahead_config.use_kv_cache_admission,
-                kv_cache_threshold=runahead_config.kv_cache_threshold,
-                poll_interval_s=runahead_config.workload_poll_interval_s,
-                staleness_threshold_s=runahead_config.workload_staleness_threshold_s,
-                require_fresh_workload=runahead_config.require_fresh_workload,
-            )
-        )
-
-        # ========== SETUP ==========
-
-        # Convert secondary prompts to work items with retry tracking
-        # deque of (work_item, retry_count)
-        secondary_queue: deque[tuple[SecondaryWorkItem, int]] = deque()
-        work_items_by_sample_id: dict[str, SecondaryWorkItem] = {}
+        work_items: list[SecondaryWorkItem] = []
 
         secondary_prompt_batch = secondary_prompts.batch.get("input_ids")
         if secondary_prompt_batch is None:
             secondary_prompt_batch = secondary_prompts.batch.get("prompts")
         if secondary_prompt_batch is None:
             raise KeyError("secondary_prompts.batch must contain 'input_ids' or 'prompts'")
+
         secondary_attention_mask = secondary_prompts.batch.get("attention_mask")
         secondary_sampling_params = secondary_prompts.non_tensor_batch.get("sampling_params")
         secondary_max_tokens = secondary_prompts.non_tensor_batch.get("max_tokens")
@@ -865,6 +817,7 @@ class AgentLoopManager:
         for i in range(len(secondary_prompts)):
             sample_id = f"secondary_{i}"
             prompt_ids_tensor = secondary_prompt_batch[i]
+
             if secondary_attention_mask is not None:
                 mask_tensor = secondary_attention_mask[i]
                 if mask_tensor.shape == prompt_ids_tensor.shape:
@@ -884,7 +837,7 @@ class AgentLoopManager:
                 if isinstance(raw_params, dict):
                     sampling_params = dict(raw_params)
 
-            # Add per-sample max_tokens if provided (similar to primary agent loop)
+            # Add per-sample max_tokens if provided
             if secondary_max_tokens is not None:
                 try:
                     max_tokens_value = secondary_max_tokens[i]
@@ -898,326 +851,136 @@ class AgentLoopManager:
                 prompt_ids=prompt_ids,
                 sampling_params=sampling_params,
             )
-            secondary_queue.append((work_item, 0))  # retry_count=0
-            work_items_by_sample_id[sample_id] = work_item
+            work_items.append(work_item)
 
-        # Track ObjectRefs
-        primary_refs: dict[ray.ObjectRef, int] = {}  # ref -> worker_idx
-        secondary_refs: dict[ray.ObjectRef, str] = {}  # ref -> sample_id
+        return work_items
 
-        # Track server_request_ids for abort (CRITICAL for reliable abort)
-        secondary_request_ids: dict[str, str] = {}  # sample_id -> server_request_id
-        retry_counts: dict[str, int] = {}  # sample_id -> retry_count
+    def generate_sequences_with_runahead(
+        self,
+        primary_prompts: DataProto,
+        secondary_prompts: DataProto,
+        runahead_config: Optional["RunaheadConfig"] = None,
+    ) -> "RunaheadResult":
+        """Generate sequences with run-ahead speculation using router-owned queue model.
 
-        secondary_results: list[SecondaryOutput] = []
+        The router owns the secondary queue and handles admission/retries internally.
+        This method:
+        1. Submits all secondary items to router via start_runahead_batch()
+        2. Runs the primary batch
+        3. Calls stop_runahead_batch() to collect results (drops pending + aborts in-flight)
 
-        # Metrics
-        secondary_started = 0
-        secondary_completed = 0
-        secondary_aborted = 0
-        secondary_rejected = 0
+        Args:
+            primary_prompts: Current batch prompts (must complete).
+            secondary_prompts: Future batch prompts (opportunistic, may be aborted).
+            runahead_config: Runahead configuration. If None, uses defaults.
 
-        # ========== LAUNCH PRIMARY ==========
+        Returns:
+            RunaheadResult containing primary outputs, secondary outputs, and metrics.
+        """
+        import time
 
-        print_server_state = os.getenv("VERL_RUNAHEAD_PRINT_SERVER_STATE", "0").strip() not in ("0", "false", "False")
-        poll_workload = os.getenv("VERL_RUNAHEAD_PRINT_POLL_WORKLOAD", "1").strip() not in ("0", "false", "False")
-        try:
-            print_interval_s = float(os.getenv("VERL_RUNAHEAD_PRINT_INTERVAL_S", "1.0"))
-        except ValueError:
-            print_interval_s = 1.0
-        next_print_s = time.monotonic()
+        from verl.experimental.agent_loop.runahead import (
+            RunaheadConfig,
+            RunaheadResult,
+        )
 
-        primary_started = not runahead_config.wait_for_primary_start
-        primary_start_ref: Optional[ray.ObjectRef] = None
+        # Use default config if not provided
+        if runahead_config is None:
+            runahead_config = RunaheadConfig(enabled=True)
+
+        # Respect config toggle for callers that share a unified codepath.
+        if not runahead_config.enabled:
+            primary_output = self.generate_sequences(primary_prompts)
+            return RunaheadResult(primary_outputs=primary_output)
+
+        # Ensure router admission threshold matches this run
+        ray.get(self.router.set_load_threshold.remote(runahead_config.load_threshold))
+
+        # Wake up servers
+        self.wake_up()
+        if self.reward_model_manager:
+            self.reward_model_manager.wake_up()
+
+        # Configure optional workload polling
+        ray.get(
+            self.router.configure_workload_polling.remote(
+                enabled=runahead_config.use_kv_cache_admission,
+                kv_cache_threshold=runahead_config.kv_cache_threshold,
+                poll_interval_s=runahead_config.workload_poll_interval_s,
+                staleness_threshold_s=runahead_config.workload_staleness_threshold_s,
+                require_fresh_workload=runahead_config.require_fresh_workload,
+            )
+        )
+
+        # ========== SETUP: Build secondary work items ==========
+
+        work_items = self._build_secondary_work_items(secondary_prompts)
+
+        # ========== SUBMIT SECONDARY BATCH TO ROUTER ==========
+
+        # Wait for at least one primary to start if configured
         primary_total_start = 0
-        if not primary_started and secondary_queue:
-            # Note: capture baseline BEFORE launching primaries to avoid starving the router actor
-            # while workers are starting up and issuing their first router.generate() calls.
+        if runahead_config.wait_for_primary_start and work_items:
             primary_total_start = ray.get(self.router.get_total_requests.remote())
 
+        # Launch primary batch
         primary_chunks = primary_prompts.chunk(len(self.agent_loop_workers))
         primary_results_by_worker: list[Optional[DataProto]] = [None] * len(primary_chunks)
+        primary_refs: dict[ray.ObjectRef, int] = {}
+
         for i, (worker, chunk) in enumerate(zip(self.agent_loop_workers, primary_chunks, strict=True)):
             ref = worker.generate_sequences.remote(chunk)
             primary_refs[ref] = i
 
-        if not primary_started and secondary_queue:
-            primary_start_ref = self.router.wait_for_total_requests.remote(
+        # Wait for primary to start before submitting secondaries
+        if runahead_config.wait_for_primary_start and work_items:
+            ray.get(self.router.wait_for_total_requests.remote(
                 min_total_requests=primary_total_start + 1,
-                poll_interval_s=runahead_config.poll_interval_s,
-                timeout_s=None,
-            )
+                poll_interval_s=runahead_config.admit_loop_poll_s,
+                timeout_s=5.0,  # Safety timeout
+            ))
 
-        def _maybe_print_server_state(tag: str, *, force: bool = False) -> None:
-            nonlocal next_print_s
-            if not print_server_state:
-                return
-            now = time.monotonic()
-            if not force and now < next_print_s:
-                return
-            next_print_s = now + max(0.1, print_interval_s)
-            try:
-                state = ray.get(self.router.get_server_state.remote(poll_workload=poll_workload))
-            except Exception as e:
-                print(f"[runahead:{tag}] get_server_state failed: {e}", flush=True)
-                return
-            payload = {
-                "primary_left": len(primary_refs),
-                "secondary_in_flight": len(secondary_refs),
-                "secondary_queue": len(secondary_queue),
-                "servers": state,
-            }
-            print(f"[runahead:{tag}] {json.dumps(payload, default=str)}", flush=True)
+        # Submit all secondary items to router (fire-and-forget)
+        if work_items:
+            ray.get(self.router.start_runahead_batch.remote(
+                work_items,
+                max_concurrent=runahead_config.max_secondary_concurrent,
+                poll_interval_s=runahead_config.admit_loop_poll_s,
+                max_queue_size=runahead_config.max_queue_size,
+            ))
 
-        # ========== BUSY LOOP: ray.wait + drip-feed ==========
+        # ========== PRIMARY LOOP ==========
 
-        _maybe_print_server_state("start", force=True)
+        start_time = time.monotonic()
 
         while primary_refs:
-            # Combine all refs
-            all_refs = list(primary_refs.keys()) + list(secondary_refs.keys())
-            if primary_start_ref is not None:
-                all_refs.append(primary_start_ref)
-
-            # Ray-native wait with timeout
             ready, _ = ray.wait(
-                all_refs,
-                num_returns=min(len(all_refs), 1),
-                timeout=runahead_config.poll_interval_s,
+                list(primary_refs.keys()),
+                num_returns=1,
+                timeout=0.5,  # Just wait for primaries
             )
 
-            # Process completed refs
             for ref in ready:
-                if primary_start_ref is not None and ref == primary_start_ref:
-                    try:
-                        start_info = ray.get(primary_start_ref)
-                        primary_started = bool(start_info.get("ready", False)) if isinstance(start_info, dict) else True
-                    except Exception:
-                        primary_started = True
-                    primary_start_ref = None
-                    continue
+                worker_idx = primary_refs.pop(ref)
+                primary_results_by_worker[worker_idx] = ray.get(ref)
 
-                if ref in primary_refs:
-                    # Primary completed
-                    worker_idx = primary_refs.pop(ref)
-                    primary_results_by_worker[worker_idx] = ray.get(ref)
+        primary_time_s = time.monotonic() - start_time
 
-                elif ref in secondary_refs:
-                    # Secondary completed
-                    sample_id = secondary_refs[ref]
-                    try:
-                        output = ray.get(ref)
-                        if output is not None:
-                            secondary_completed += 1
-                            secondary_results.append(SecondaryOutput(
-                                sample_id=sample_id,
-                                output=output,
-                                status="completed",
-                                tokens_generated=len(output.token_ids) if hasattr(output, 'token_ids') and output.token_ids else 0,
-                            ))
-                        else:
-                            # Rejected by router - requeue with retry
-                            current_retry = retry_counts.get(sample_id, 0)
-                            if current_retry < runahead_config.max_retries:
-                                work_item = work_items_by_sample_id[sample_id]
-                                secondary_queue.append((work_item, current_retry + 1))
-                            else:
-                                secondary_rejected += 1
-                                secondary_results.append(SecondaryOutput(
-                                    sample_id=sample_id,
-                                    output=None,
-                                    status="rejected",
-                                    tokens_generated=0,
-                                ))
-                    except Exception as e:
-                        logger.error(f"Secondary {sample_id} failed: {e}")
-                    finally:
-                        del secondary_refs[ref]
-                        secondary_request_ids.pop(sample_id, None)
+        # ========== STOP SECONDARY BATCH AND COLLECT RESULTS ==========
 
-            _maybe_print_server_state("loop")
+        if work_items:
+            batch_result = ray.get(self.router.stop_runahead_batch.remote(
+                abort_grace_s=runahead_config.abort_grace_s,
+            ))
+            secondary_outputs = batch_result.outputs
+            metrics = batch_result.metrics
+            metrics.primary_time_s = primary_time_s
+        else:
+            from verl.experimental.agent_loop.runahead import RunaheadMetrics
+            secondary_outputs = []
+            metrics = RunaheadMetrics(primary_time_s=primary_time_s)
 
-            # If the last primary just finished, don't start any new secondary.
-            if not primary_refs:
-                break
-
-            # Drip-feed: submit secondary if capacity available.
-            # Strict gating: don't start any secondaries until at least one primary request
-            # has reached the router, otherwise server_load is still zero and admission is
-            # overly optimistic (can starve primaries at startup).
-            if not primary_started:
-                continue
-
-            while (secondary_queue and
-                   len(secondary_refs) < runahead_config.max_secondary_concurrent):
-
-                work_item, retry_count = secondary_queue.popleft()
-                retry_counts[work_item.sample_id] = retry_count
-
-                # Generate server_request_id UPFRONT (for abort tracking)
-                server_request_id = uuid4().hex
-                secondary_request_ids[work_item.sample_id] = server_request_id
-
-                # Submit to router (non-blocking)
-                ref = self.router.generate_secondary.remote(
-                    server_request_id,
-                    prompt_ids=work_item.prompt_ids,
-                    sampling_params=work_item.sampling_params,
-                )
-                secondary_refs[ref] = work_item.sample_id
-                secondary_started += 1
-
-        if primary_start_ref is not None:
-            try:
-                ray.cancel(primary_start_ref, force=False)
-            except Exception:
-                pass
-            primary_start_ref = None
-
-        # Drain any already-completed secondary results without blocking before aborting the rest.
-        if secondary_refs:
-            while True:
-                ready, _ = ray.wait(list(secondary_refs.keys()), num_returns=len(secondary_refs), timeout=0)
-                if not ready:
-                    break
-
-                for ref in ready:
-                    sample_id = secondary_refs[ref]
-                    try:
-                        output = ray.get(ref)
-                        if output is not None:
-                            secondary_completed += 1
-                            secondary_results.append(
-                                SecondaryOutput(
-                                    sample_id=sample_id,
-                                    output=output,
-                                    status="completed",
-                                    tokens_generated=len(output.token_ids) if output.token_ids else 0,
-                                )
-                            )
-                        else:
-                            secondary_rejected += 1
-                            secondary_results.append(
-                                SecondaryOutput(
-                                    sample_id=sample_id,
-                                    output=None,
-                                    status="rejected",
-                                    tokens_generated=0,
-                                )
-                            )
-                    except Exception as e:
-                        logger.error(f"Secondary {sample_id} failed: {e}")
-                    finally:
-                        del secondary_refs[ref]
-                        secondary_request_ids.pop(sample_id, None)
-
-        # ========== PRIMARY DONE: ABORT SECONDARY ==========
-
-        if secondary_refs:
-            # Collect server_request_ids for running secondary
-            ids_to_abort = [
-                secondary_request_ids[sample_id]
-                for sample_id in secondary_refs.values()
-                if sample_id in secondary_request_ids
-            ]
-
-            # Abort on router - best-effort signal to vLLM to stop and return partial outputs.
-            if ids_to_abort:
-                try:
-                    ray.get(self.router.abort_requests.remote(ids_to_abort))
-                except Exception as e:
-                    logger.warning(f"Failed to abort secondary requests: {e}")
-
-            _maybe_print_server_state("abort_start", force=True)
-
-            # Give aborted tasks a short grace window to return partial outputs. This prevents
-            # ray.cancel() from discarding outputs and avoids leaking router-side in-flight counters.
-            abort_deadline_s = time.monotonic() + max(0.0, float(runahead_config.abort_grace_s))
-            remaining_refs = list(secondary_refs.keys())
-            while remaining_refs and time.monotonic() < abort_deadline_s:
-                timeout_s = min(
-                    max(0.0, abort_deadline_s - time.monotonic()),
-                    float(runahead_config.poll_interval_s),
-                )
-                ready, not_ready = ray.wait(
-                    remaining_refs,
-                    num_returns=len(remaining_refs),
-                    timeout=timeout_s,
-                )
-                if not ready:
-                    remaining_refs = not_ready
-                    continue
-
-                for ref in ready:
-                    sample_id = secondary_refs.get(ref)
-                    if sample_id is None:
-                        continue
-                    try:
-                        output = ray.get(ref)
-                        if output is None:
-                            secondary_rejected += 1
-                            secondary_results.append(
-                                SecondaryOutput(
-                                    sample_id=sample_id,
-                                    output=None,
-                                    status="rejected",
-                                    tokens_generated=0,
-                                )
-                            )
-                        else:
-                            stop_reason = getattr(output, "stop_reason", None)
-                            tokens_generated = len(output.token_ids) if getattr(output, "token_ids", None) else 0
-                            if stop_reason == "aborted":
-                                secondary_aborted += 1
-                                status = "aborted"
-                            else:
-                                secondary_completed += 1
-                                status = "completed"
-                            secondary_results.append(
-                                SecondaryOutput(
-                                    sample_id=sample_id,
-                                    output=output,
-                                    status=status,
-                                    tokens_generated=tokens_generated,
-                                )
-                            )
-                    except Exception as e:
-                        logger.debug(f"Secondary {sample_id} failed after abort: {e}")
-                        secondary_aborted += 1
-                        secondary_results.append(
-                            SecondaryOutput(
-                                sample_id=sample_id,
-                                output=None,
-                                status="aborted",
-                                tokens_generated=0,
-                            )
-                        )
-                    finally:
-                        secondary_refs.pop(ref, None)
-                        secondary_request_ids.pop(sample_id, None)
-
-                remaining_refs = list(secondary_refs.keys())
-
-            # Force-cancel any stragglers (abort should be quick; this is a safety valve).
-            for ref, sample_id in list(secondary_refs.items()):
-                try:
-                    # Actor tasks only support force=False; for async actors this maps to asyncio cancellation.
-                    ray.cancel(ref, force=False)
-                except Exception:
-                    pass
-                secondary_aborted += 1
-                secondary_results.append(
-                    SecondaryOutput(
-                        sample_id=sample_id,
-                        output=None,
-                        status="aborted",
-                        tokens_generated=0,
-                    )
-                )
-                secondary_refs.pop(ref, None)
-                secondary_request_ids.pop(sample_id, None)
-
-            _maybe_print_server_state("abort_done", force=True)
+        # ========== CLEANUP ==========
 
         # Sleep servers
         if runahead_config.use_kv_cache_admission:
@@ -1235,13 +998,8 @@ class AgentLoopManager:
 
         result = RunaheadResult(
             primary_outputs=primary_output,
-            secondary_outputs=secondary_results,
-            metrics=RunaheadMetrics(
-                secondary_started=secondary_started,
-                secondary_completed=secondary_completed,
-                secondary_aborted=secondary_aborted,
-                secondary_rejected=secondary_rejected,
-            ),
+            secondary_outputs=secondary_outputs,
+            metrics=metrics,
         )
 
         return result
@@ -1263,3 +1021,4 @@ class AgentLoopManager:
             await asyncio.gather(*tasks)
 
         asyncio.run(run_all())
+        

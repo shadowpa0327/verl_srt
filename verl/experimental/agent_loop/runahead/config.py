@@ -23,15 +23,22 @@ from dataclasses import dataclass
 class RunaheadConfig:
     """Configuration for run-ahead rollout.
 
+    The router owns the secondary queue and handles admission internally.
+    The manager submits all secondary items at once via start_runahead_batch(),
+    runs the primary loop, then calls stop_runahead_batch() to collect results.
+
+    With the router-owned queue model, capacity-based rejection is eliminated:
+    items wait in the queue until slack exists. No retry logic is needed.
+
     Attributes:
         enabled: Whether run-ahead is enabled.
         load_threshold: Admit secondary requests when server_load < threshold.
             Server load is the count of in-flight requests (running + waiting).
-        poll_interval_s: How often the Manager checks for completed tasks and drip-feeds
-            secondary requests (seconds).
-        max_retries: Maximum retry attempts for rejected secondary requests.
         max_secondary_concurrent: Maximum number of secondary requests in flight at once.
             This is a hard cap to prevent secondary explosion under long primaries.
+        max_queue_size: Maximum number of pending secondary items in the router queue.
+            Oldest items are dropped if queue overflows.
+        admit_loop_poll_s: How often the router's admit loop polls for slack (seconds).
         use_kv_cache_admission: If True, use vLLM workload polling (kv_cache_usage) as an
             additional safety gate for secondary admission.
         kv_cache_threshold: Reject secondary when kv_cache_usage >= threshold (0.0-1.0).
@@ -47,9 +54,11 @@ class RunaheadConfig:
 
     enabled: bool = False
     load_threshold: int = 32
-    poll_interval_s: float = 0.1
-    max_retries: int = 3
     max_secondary_concurrent: int = 8
+
+    # Router queue settings
+    max_queue_size: int = 256
+    admit_loop_poll_s: float = 0.05
 
     # Optional workload-aware admission (kv cache as a coarse safety valve)
     use_kv_cache_admission: bool = False

@@ -28,12 +28,19 @@ import heapq
 import logging
 import os
 import time
+from collections import deque
 from typing import Any, Optional
 from uuid import uuid4
 
 import ray
 from cachetools import LRUCache
 
+from verl.experimental.agent_loop.runahead.types import (
+    RunaheadBatchResult,
+    RunaheadMetrics,
+    SecondaryOutput,
+    SecondaryWorkItem,
+)
 from verl.workers.rollout.replica import TokenOutput
 
 logger = logging.getLogger(__file__)
@@ -167,13 +174,14 @@ class CentralRouter:
 @ray.remote
 class RunaheadCentralRouter:
     """
-    Central router with run-ahead (secondary) request support.
+    Central router with run-ahead (secondary) request support and router-owned queue.
 
     This router provides all CentralRouter functionality plus:
+    - Router-owned queue: secondary work items queued internally, admitted when slack appears
     - Admission control: only admit secondary when server_load < load_threshold
-    - Secondary routing: pick_slack_server() finds server with lowest load
-    - Request tracking: maps server_request_id → server_idx for targeted abort
-    - Targeted abort: abort_requests() cancels specific requests
+    - Internal admit loop: background task polls for slack and admits pending items
+    - No retry needed: queue model eliminates capacity-based rejection
+    - Atomic cleanup: stop_runahead_batch() drops pending + aborts in-flight
 
     Note: This is a standalone class (not inheriting from CentralRouter) because
     Ray does not support inheritance from actor classes.
@@ -184,13 +192,11 @@ class RunaheadCentralRouter:
         # Primary requests (same as CentralRouter):
         output = await router.generate.remote(request_id, prompt_ids=..., ...)
 
-        # Secondary requests (caller provides server_request_id for abort tracking):
-        server_request_id = uuid4().hex  # Generate upfront
-        output = await router.generate_secondary.remote(server_request_id, prompt_ids=..., ...)
-        # Returns None if rejected (server at capacity)
-
-        # Abort remaining secondary:
-        await router.abort_requests.remote([server_request_id_1, server_request_id_2, ...])
+        # Secondary requests via batch API:
+        await router.start_runahead_batch.remote(work_items, max_concurrent=8)
+        # ... run primary batch ...
+        result = await router.stop_runahead_batch.remote(abort_grace_s=1.0)
+        # result.outputs contains completed/aborted/rejected SecondaryOutput items
     """
 
     def __init__(
@@ -248,6 +254,23 @@ class RunaheadCentralRouter:
         self.total_secondary_requests = 0
         self.secondary_rejected = 0
         self.secondary_aborted = 0
+
+        # Runahead batch state (router-owned queue model)
+        self._batch_active: bool = False
+        self._batch_id: Optional[str] = None
+        self._pending_queue: deque[SecondaryWorkItem] = deque()
+        # sample_id -> (asyncio.Task, server_idx, server_request_id)
+        self._in_flight_batch: dict[str, tuple[asyncio.Task, int, str]] = {}
+        self._batch_results: list[SecondaryOutput] = []
+        self._batch_metrics: RunaheadMetrics = RunaheadMetrics()
+
+        # Admit loop control
+        self._admit_loop_task: Optional[asyncio.Task] = None
+        self._admit_loop_stop: asyncio.Event = asyncio.Event()
+        self._admit_loop_config: dict[str, Any] = {}
+
+        # Round-robin starting point for fair server selection
+        self._round_robin_start: int = 0
 
         logger.info(
             f"RunaheadCentralRouter initialized with {self.num_servers} servers, "
@@ -441,21 +464,30 @@ class RunaheadCentralRouter:
         return server_idx, server
 
     def pick_slack_server(self) -> Optional[int]:
-        """Find server with lowest load under threshold.
+        """Find server with lowest load under threshold using round-robin start.
 
         Returns:
             Server index with slack, or None if all servers at capacity.
 
+        The round-robin starting point ensures fair distribution across servers
+        when multiple servers have equal load (avoids always picking server 0).
+
         Note: Use priority queue if scaling beyond ~100 servers.
+
+        TODO: kv_cache_usage is polled periodically and may be stale. When we admit
+        a request, the actual kv_cache on the server increases but our cached value
+        doesn't reflect that until the next poll. Consider adding optimistic
+        reservation: increment cached kv_cache_usage by an estimate when admitting,
+        decrement when request completes. This prevents over-admission between polls.
         """
         best_idx = None
         best_load = self.load_threshold  # Start at threshold
         now = time.monotonic()
 
-        # Debug: print current loads
-        #print(f"[pick_slack_server] threshold={self.load_threshold}, server_loads={self.server_load}")
-
-        for idx in range(self.num_servers):
+        # Round-robin: start from different server each time for fairness
+        start = self._round_robin_start
+        for i in range(self.num_servers):
+            idx = (start + i) % self.num_servers
             load = self.server_load[idx]
             if load >= best_load:
                 continue
@@ -474,10 +506,10 @@ class RunaheadCentralRouter:
             best_idx = idx
             best_load = load
 
-        # if best_idx is None:
-        #     print(f"[pick_slack_server] REJECTED: all servers at capacity (loads >= {self.load_threshold})")
-        # else:
-        #     print(f"[pick_slack_server] ADMITTED: server_idx={best_idx}, load={best_load}")
+        # Advance round-robin for next call
+        if best_idx is not None:
+            self._round_robin_start = (best_idx + 1) % self.num_servers
+
         return best_idx
 
     async def generate(
@@ -513,57 +545,6 @@ class RunaheadCentralRouter:
                     server_idx,
                 )
                 self.server_load[server_idx] = 0
-
-    async def generate_secondary(
-        self,
-        server_request_id: str,
-        *,
-        prompt_ids: list[int],
-        sampling_params: dict[str, Any],
-        image_data: Optional[list[Any]] = None,
-    ) -> Optional[TokenOutput]:
-        """Route secondary (runahead) request with admission control.
-
-        The caller provides the server_request_id upfront, enabling reliable abort
-        tracking before the request completes.
-
-        Args:
-            server_request_id: Caller-provided ID for abort tracking.
-            prompt_ids: List of prompt token IDs.
-            sampling_params: Sampling parameters for generation.
-            image_data: Optional multi-modal image data.
-
-        Returns:
-            TokenOutput if admitted and completed, None if rejected due to capacity.
-        """
-        self.total_secondary_requests += 1
-
-        # Admission control: find server with slack
-        server_idx = self.pick_slack_server()
-        if server_idx is None:
-            self.secondary_rejected += 1
-            return None
-
-        # Track for abort BEFORE calling vLLM (critical for reliable abort)
-        self._request_to_server[server_request_id] = server_idx
-        self.server_load[server_idx] += 1
-        #print(f"Admitted secondary request {server_request_id} to server_idx={server_idx}")
-        #print(f"Current server loads: {self.server_load}")
-        try:
-            server = self.server_handles[server_idx]
-            output = await server.generate.remote(
-                request_id=server_request_id,
-                prompt_ids=prompt_ids,
-                sampling_params=sampling_params,
-                image_data=image_data,
-            )
-            return output
-        finally:
-            self.server_load[server_idx] -= 1
-            if self.server_load[server_idx] < 0:
-                self.server_load[server_idx] = 0
-            # Clean up tracking after completion (abort already handled if needed)
-            self._request_to_server.pop(server_request_id, None)
 
     async def abort_requests(self, server_request_ids: list[str]) -> dict[str, int]:
         """Abort specific requests by server_request_id.
@@ -652,3 +633,383 @@ class RunaheadCentralRouter:
             "secondary_aborted": self.secondary_aborted,
             "in_flight_tracked": len(self._request_to_server),
         }
+
+    # =========================================================================
+    # Router-Owned Queue Model: Batch API
+    # =========================================================================
+
+    async def start_runahead_batch(
+        self,
+        items: list[SecondaryWorkItem],
+        *,
+        max_concurrent: int = 8,
+        poll_interval_s: float = 0.05,
+        max_queue_size: int = 256,
+    ) -> dict[str, Any]:
+        """Start a batch of secondary (runahead) work items.
+
+        The router queues all items internally and runs an admit loop that
+        polls for slack and admits items when capacity is available.
+
+        With the router-owned queue model, capacity-based rejection is eliminated:
+        items wait in the queue until slack exists. No retry logic is needed.
+
+        Args:
+            items: List of SecondaryWorkItem to process.
+            max_concurrent: Maximum concurrent in-flight secondary requests.
+            poll_interval_s: Polling interval for admit loop (seconds).
+            max_queue_size: Maximum pending items in queue (oldest dropped on overflow).
+
+        Returns:
+            Dict with {"batch_id": str, "queued": int, "status": "started"}.
+
+        Raises:
+            RuntimeError: If a batch is already active.
+        """
+        if self._batch_active:
+            raise RuntimeError("A runahead batch is already active. Call stop_runahead_batch() first.")
+
+        # Reset batch state
+        self._batch_id = uuid4().hex
+        self._batch_active = True
+        self._pending_queue.clear()
+        self._in_flight_batch.clear()
+        self._batch_results.clear()
+        self._batch_metrics = RunaheadMetrics()
+        self._admit_loop_stop.clear()
+
+        # Store config for admit loop
+        self._admit_loop_config = {
+            "max_concurrent": max_concurrent,
+            "poll_interval_s": poll_interval_s,
+            "max_queue_size": max_queue_size,
+        }
+
+        # Queue items (enforce max_queue_size)
+        for item in items:
+            if len(self._pending_queue) >= max_queue_size:
+                # Drop oldest item
+                dropped = self._pending_queue.popleft()
+                self._batch_results.append(SecondaryOutput(
+                    sample_id=dropped.sample_id,
+                    output=None,
+                    status="rejected",
+                    tokens_generated=0,
+                ))
+                self._batch_metrics.secondary_rejected += 1
+            self._pending_queue.append(item)
+
+        # Start admit loop
+        self._admit_loop_task = asyncio.create_task(self._admit_loop())
+
+        logger.info(
+            f"RunaheadCentralRouter started batch {self._batch_id} with {len(self._pending_queue)} items, "
+            f"max_concurrent={max_concurrent}"
+        )
+
+        return {
+            "batch_id": self._batch_id,
+            "queued": len(self._pending_queue),
+            "status": "started",
+        }
+
+    async def stop_runahead_batch(
+        self,
+        *,
+        abort_grace_s: float = 1.0,
+    ) -> RunaheadBatchResult:
+        """Stop the current runahead batch and return results.
+
+        This atomically:
+        1. Stops the admit loop
+        2. Drops all pending items (marks as rejected)
+        3. Aborts all in-flight requests
+        4. Waits up to abort_grace_s for in-flight tasks to complete
+        5. Force-cancels any stragglers
+
+        Args:
+            abort_grace_s: Grace period for in-flight tasks to complete (seconds).
+
+        Returns:
+            RunaheadBatchResult with completed, aborted, and rejected outputs.
+
+        Raises:
+            RuntimeError: If no batch is active.
+        """
+        if not self._batch_active:
+            raise RuntimeError("No runahead batch is active.")
+
+        batch_id = self._batch_id or ""
+
+        # 1. Signal admit loop to stop
+        self._admit_loop_stop.set()
+
+        # 2. Wait for admit loop to stop (with timeout)
+        if self._admit_loop_task and not self._admit_loop_task.done():
+            try:
+                await asyncio.wait_for(self._admit_loop_task, timeout=1.0)
+            except asyncio.TimeoutError:
+                self._admit_loop_task.cancel()
+                try:
+                    await self._admit_loop_task
+                except asyncio.CancelledError:
+                    pass
+
+        # 3. Drop all pending items
+        while self._pending_queue:
+            item = self._pending_queue.popleft()
+            self._batch_results.append(SecondaryOutput(
+                sample_id=item.sample_id,
+                output=None,
+                status="rejected",
+                tokens_generated=0,
+            ))
+            self._batch_metrics.secondary_rejected += 1
+
+        # 4. Abort all in-flight requests
+        in_flight_ids = list(self._in_flight_batch.keys())
+        if in_flight_ids:
+            # Issue abort to vLLM servers
+            server_request_ids = [info[2] for info in self._in_flight_batch.values()]
+            await self.abort_requests(server_request_ids)
+
+            # Wait for tasks with grace period
+            tasks = [info[0] for info in self._in_flight_batch.values()]
+            if tasks:
+                done, pending = await asyncio.wait(tasks, timeout=abort_grace_s)
+
+                # Collect results from done tasks
+                for task in done:
+                    try:
+                        # Task completed (result already collected in _execute_secondary)
+                        pass
+                    except Exception:
+                        pass
+
+                # Cancel remaining pending tasks
+                for task in pending:
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+
+        # 5. Any remaining in-flight items that weren't already collected, mark as aborted.
+        # Note: _execute_secondary may have already added results during the grace period,
+        # so we check for existing sample_ids to avoid double-counting.
+        existing_sample_ids = {o.sample_id for o in self._batch_results}
+        for sample_id, (task, server_idx, server_request_id) in list(self._in_flight_batch.items()):
+            if sample_id not in existing_sample_ids:
+                self._batch_results.append(SecondaryOutput(
+                    sample_id=sample_id,
+                    output=None,
+                    status="aborted",
+                    tokens_generated=0,
+                ))
+                self._batch_metrics.secondary_aborted += 1
+        self._in_flight_batch.clear()
+
+        # 6. Build result
+        result = RunaheadBatchResult(
+            batch_id=batch_id,
+            outputs=list(self._batch_results),
+            metrics=self._batch_metrics,
+        )
+
+        # 7. Reset state
+        self._batch_active = False
+        self._batch_id = None
+        self._pending_queue.clear()
+        self._batch_results.clear()
+        self._admit_loop_task = None
+
+        logger.info(
+            f"RunaheadCentralRouter stopped batch {batch_id}: "
+            f"completed={result.metrics.secondary_completed}, "
+            f"aborted={result.metrics.secondary_aborted}, "
+            f"rejected={result.metrics.secondary_rejected}"
+        )
+
+        return result
+
+    def get_runahead_batch_status(self) -> dict[str, Any]:
+        """Get current status of the active runahead batch.
+
+        Returns:
+            Dict with batch_active, pending_count, in_flight_count, completed_count, etc.
+        """
+        completed = sum(1 for o in self._batch_results if o.status == "completed")
+        aborted = sum(1 for o in self._batch_results if o.status == "aborted")
+        rejected = sum(1 for o in self._batch_results if o.status == "rejected")
+
+        return {
+            "batch_active": self._batch_active,
+            "batch_id": self._batch_id,
+            "pending_count": len(self._pending_queue),
+            "in_flight_count": len(self._in_flight_batch),
+            "completed_count": completed,
+            "aborted_count": aborted,
+            "rejected_count": rejected,
+            "total_results": len(self._batch_results),
+        }
+
+    # =========================================================================
+    # Admit Loop (internal)
+    # =========================================================================
+
+    async def _admit_loop(self) -> None:
+        """Background task that admits pending items when slack is available.
+
+        Loop invariant:
+        - Runs while _batch_active and not _admit_loop_stop.is_set()
+        - Admits at most max_concurrent items at a time
+        - Items wait in queue until slack exists (no retry needed)
+        - Collects results from completed tasks
+        """
+        max_concurrent = self._admit_loop_config.get("max_concurrent", 8)
+        poll_interval_s = self._admit_loop_config.get("poll_interval_s", 0.05)
+
+        try:
+            while self._batch_active and not self._admit_loop_stop.is_set():
+                # 1. Collect completed in-flight tasks (non-blocking)
+                await self._collect_completed_tasks()
+
+                # 2. Admit new items if capacity available
+                while (len(self._in_flight_batch) < max_concurrent and
+                       self._pending_queue and
+                       not self._admit_loop_stop.is_set()):
+
+                    server_idx = self.pick_slack_server()
+                    if server_idx is None:
+                        break  # No slack, wait for next poll
+
+                    work_item = self._pending_queue.popleft()
+                    server_request_id = uuid4().hex
+
+                    # Start task
+                    task = asyncio.create_task(
+                        self._execute_secondary(work_item, server_idx, server_request_id)
+                    )
+                    self._in_flight_batch[work_item.sample_id] = (task, server_idx, server_request_id)
+                    self._request_to_server[server_request_id] = server_idx
+
+                    self._batch_metrics.secondary_started += 1
+                    self.total_secondary_requests += 1
+
+                # 3. Sleep before next poll (interruptible)
+                try:
+                    await asyncio.wait_for(
+                        self._admit_loop_stop.wait(),
+                        timeout=poll_interval_s
+                    )
+                    break  # Stop requested
+                except asyncio.TimeoutError:
+                    pass  # Continue polling
+
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.exception("RunaheadCentralRouter admit loop failed")
+
+    async def _execute_secondary(
+        self,
+        work_item: SecondaryWorkItem,
+        server_idx: int,
+        server_request_id: str,
+    ) -> None:
+        """Execute a single secondary request and handle result/retry.
+
+        Race Safety:
+            This method may complete concurrently with stop_runahead_batch().
+            The design handles this gracefully:
+            1. Results are appended to _batch_results BEFORE removing from _in_flight_batch
+            2. stop_runahead_batch() checks existing_sample_ids before adding aborted entries
+            3. Even if timing is tight, we get exactly one result per sample_id
+
+        TODO: Add optimistic kv_cache reservation here to prevent over-admission.
+            Before generate: self._workload_kv_cache_usage[server_idx] += estimated_kv
+            In finally block: self._workload_kv_cache_usage[server_idx] -= estimated_kv
+            See pick_slack_server() docstring for details.
+        """
+        self.server_load[server_idx] += 1
+
+        try:
+            server = self.server_handles[server_idx]
+            output = await server.generate.remote(
+                request_id=server_request_id,
+                prompt_ids=work_item.prompt_ids,
+                sampling_params=work_item.sampling_params,
+                image_data=work_item.image_data,
+            )
+
+            if output is not None:
+                tokens_generated = len(output.token_ids) if output.token_ids else 0
+                # Check if the request was aborted (vLLM returns output with stop_reason="aborted")
+                stop_reason = getattr(output, "stop_reason", None)
+                if stop_reason == "aborted":
+                    self._batch_results.append(SecondaryOutput(
+                        sample_id=work_item.sample_id,
+                        output=output,
+                        status="aborted",
+                        tokens_generated=tokens_generated,
+                    ))
+                    self._batch_metrics.secondary_aborted += 1
+                    self.secondary_aborted += 1
+                else:
+                    self._batch_results.append(SecondaryOutput(
+                        sample_id=work_item.sample_id,
+                        output=output,
+                        status="completed",
+                        tokens_generated=tokens_generated,
+                    ))
+                    self._batch_metrics.secondary_completed += 1
+            else:
+                # Should not happen with router-owned queue, but handle gracefully
+                self._handle_failure(work_item)
+
+        except asyncio.CancelledError:
+            # Aborted by stop_runahead_batch - don't add to results here,
+            # stop_runahead_batch will handle it
+            raise
+
+        except Exception as e:
+            logger.warning(f"Secondary {work_item.sample_id} failed: {e}")
+            self._handle_failure(work_item)
+
+        finally:
+            self.server_load[server_idx] -= 1
+            if self.server_load[server_idx] < 0:
+                self.server_load[server_idx] = 0
+            self._request_to_server.pop(server_request_id, None)
+            # Remove from in_flight AFTER adding to _batch_results (see Race Safety above)
+            self._in_flight_batch.pop(work_item.sample_id, None)
+
+    async def _collect_completed_tasks(self) -> None:
+        """Collect results from completed in-flight tasks (non-blocking)."""
+        completed_sample_ids = []
+
+        for sample_id, (task, server_idx, server_request_id) in list(self._in_flight_batch.items()):
+            if task.done():
+                completed_sample_ids.append(sample_id)
+                # Results already added in _execute_secondary
+                try:
+                    task.result()  # Raise any exception
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    pass  # Already handled in _execute_secondary
+
+        # Clean up (already done in _execute_secondary.finally, but be safe)
+        for sample_id in completed_sample_ids:
+            self._in_flight_batch.pop(sample_id, None)
+
+    def _handle_failure(self, work_item: SecondaryWorkItem) -> None:
+        """Handle a failed item (no retries - queue model prevents capacity rejection)."""
+        self._batch_results.append(SecondaryOutput(
+            sample_id=work_item.sample_id,
+            output=None,
+            status="rejected",
+            tokens_generated=0,
+        ))
+        self._batch_metrics.secondary_rejected += 1
+        self.secondary_rejected += 1

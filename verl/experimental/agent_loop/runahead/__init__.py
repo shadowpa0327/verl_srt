@@ -20,14 +20,16 @@ requests to complete.
 
 Components:
 - RunaheadConfig: Configuration dataclass
-- Types: SecondaryOutput, RunaheadResult, RunaheadMetrics, SecondaryWorkItem
+- Types: SecondaryOutput, RunaheadResult, RunaheadMetrics, SecondaryWorkItem, RunaheadBatchResult
 
-Note: The Manager-level busy loop in AgentLoopManager.generate_sequences_with_runahead()
-uses ray.wait() directly for interleaving.
+The router owns the secondary queue and handles admission/retries internally.
+The manager submits all secondary items at once via start_runahead_batch(),
+runs the primary loop, then calls stop_runahead_batch() to collect results.
 """
 
 from verl.experimental.agent_loop.runahead.config import RunaheadConfig
 from verl.experimental.agent_loop.runahead.types import (
+    RunaheadBatchResult,
     RunaheadMetrics,
     RunaheadResult,
     SecondaryOutput,
@@ -36,6 +38,7 @@ from verl.experimental.agent_loop.runahead.types import (
 
 __all__ = [
     "RunaheadConfig",
+    "RunaheadBatchResult",
     "SecondaryOutput",
     "RunaheadResult",
     "RunaheadMetrics",

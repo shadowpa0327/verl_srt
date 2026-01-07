@@ -202,8 +202,7 @@ def test_vllm_runahead_manager_busy_loop_standalone() -> None:
     runahead_cfg = RunaheadConfig(
         enabled=True,
         load_threshold=int(os.getenv("LOAD_THRESHOLD", "32")),
-        poll_interval_s=float(os.getenv("POLL_INTERVAL_S", "0.05" if heavy else "0.05")),
-        max_retries=int(os.getenv("MAX_RETRIES", "0")),
+        admit_loop_poll_s=float(os.getenv("POLL_INTERVAL_S", "0.05" if heavy else "0.05")),
         max_secondary_concurrent=int(os.getenv("MAX_SECONDARY_CONCURRENT", "8" if heavy else "4")),
         use_kv_cache_admission=os.getenv("USE_KV_CACHE_ADMISSION", "0").strip() not in ("0", "false", "False"),
         kv_cache_threshold=float(os.getenv("KV_CACHE_THRESHOLD", "0.85")),
@@ -224,8 +223,7 @@ def test_vllm_runahead_manager_busy_loop_standalone() -> None:
         "RunaheadConfig:",
         {
             "load_threshold": runahead_cfg.load_threshold,
-            "poll_interval_s": runahead_cfg.poll_interval_s,
-            "max_retries": runahead_cfg.max_retries,
+            "admit_loop_poll_s": runahead_cfg.admit_loop_poll_s,
             "max_secondary_concurrent": runahead_cfg.max_secondary_concurrent,
             "use_kv_cache_admission": runahead_cfg.use_kv_cache_admission,
             "kv_cache_threshold": runahead_cfg.kv_cache_threshold,

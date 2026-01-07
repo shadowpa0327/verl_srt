@@ -15,7 +15,7 @@
 Type definitions for run-ahead rollout.
 """
 from dataclasses import dataclass, field
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from verl.protocol import DataProto
 from verl.workers.rollout.replica import TokenOutput
@@ -82,10 +82,30 @@ class SecondaryWorkItem:
         sample_id: Unique identifier for this sample.
         prompt_ids: Token IDs for the prompt.
         sampling_params: Sampling parameters for generation.
-        retry_count: Number of times this item has been retried.
+        retry_count: Number of times this item has been retried (managed by router).
+        image_data: Optional multi-modal image data.
     """
 
     sample_id: str
     prompt_ids: list[int]
     sampling_params: dict
     retry_count: int = 0
+    image_data: Optional[list[Any]] = None
+
+
+@dataclass
+class RunaheadBatchResult:
+    """Result of a runahead batch operation from the router.
+
+    This is returned by RunaheadCentralRouter.stop_runahead_batch() and contains
+    all secondary outputs collected during the batch.
+
+    Attributes:
+        batch_id: Unique identifier for this batch.
+        outputs: List of SecondaryOutput (completed, aborted, or rejected).
+        metrics: Aggregate metrics for the batch.
+    """
+
+    batch_id: str = ""
+    outputs: list[SecondaryOutput] = field(default_factory=list)
+    metrics: RunaheadMetrics = field(default_factory=RunaheadMetrics)

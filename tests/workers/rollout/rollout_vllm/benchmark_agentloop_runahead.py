@@ -467,8 +467,7 @@ class BenchmarkRunner:
         runahead_cfg = RunaheadConfig(
             enabled=True,
             load_threshold=self.exp_config.load_threshold,
-            poll_interval_s=5,
-            max_retries=999999,  # Allow retries for rejected requests
+            admit_loop_poll_s=0.05,  # Router polls for slack every 50ms
             max_secondary_concurrent=self.exp_config.max_secondary_concurrent,
         )
 
