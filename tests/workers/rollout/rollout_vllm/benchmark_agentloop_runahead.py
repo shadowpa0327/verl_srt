@@ -170,6 +170,7 @@ def compose_config(model_path: str, num_gpus: int, tp_size: int, num_workers: in
     config.actor_rollout_ref.rollout.tensor_model_parallel_size = tp_size
     config.actor_rollout_ref.rollout.data_parallel_size = 1
     config.actor_rollout_ref.rollout.pipeline_model_parallel_size = 1
+    config.actor_rollout_ref.rollout.enable_prefix_caching = False    
 
     # Token length bounds
     config.actor_rollout_ref.rollout.prompt_length = 512
@@ -469,6 +470,7 @@ class BenchmarkRunner:
             load_threshold=self.exp_config.load_threshold,
             admit_loop_poll_s=0.05,  # Router polls for slack every 50ms
             max_secondary_concurrent=self.exp_config.max_secondary_concurrent,
+            max_queue_size=primary_size,  # Allow queueing all secondary requests
         )
 
         # Build workloads
@@ -539,8 +541,8 @@ class BenchmarkRunner:
 
 def run_experiment_matrix(runner: BenchmarkRunner, num_rounds: int = 1) -> list:
     """Run full experiment matrix with multiple rounds."""
-    primary_sizes = [16, 32, 64]
-    long_tail_ratios = [0.20, 0.40, 0.60]
+    primary_sizes = [512]
+    long_tail_ratios = [0.10]
 
     results = []
     total = len(primary_sizes) * len(long_tail_ratios) * num_rounds
@@ -676,15 +678,15 @@ def main():
 
     # Build config from environment
     exp_config = ExperimentConfig(
-        primary_size=int(os.environ.get("PRIMARY_SIZE", "128")),
-        long_tail_ratio=float(os.environ.get("LONG_TAIL_RATIO", "0.20")),
-        load_threshold=int(os.environ.get("LOAD_THRESHOLD", "16")),
+        primary_size=int(os.environ.get("PRIMARY_SIZE", "256")),
+        long_tail_ratio=float(os.environ.get("LONG_TAIL_RATIO", "0.10")),
+        load_threshold=int(os.environ.get("LOAD_THRESHOLD", "32")),
         max_secondary_concurrent=int(os.environ.get("MAX_SECONDARY_CONCURRENT", "64")),
         short_max_tokens=int(os.environ.get("SHORT_MAX_TOKENS", "2048")),
         long_max_tokens=int(os.environ.get("LONG_MAX_TOKENS", "16384")),
-        num_gpus=int(os.environ.get("NUM_GPUS", "2")),
+        num_gpus=int(os.environ.get("NUM_GPUS", "4")),
         tp_size=int(os.environ.get("TP_SIZE", "1")),
-        num_workers=int(os.environ.get("NUM_WORKERS", "2")),
+        num_workers=int(os.environ.get("NUM_WORKERS", "4")),
         model_path=os.environ.get("MODEL_PATH", "Qwen/Qwen3-8B"),
     )
 
