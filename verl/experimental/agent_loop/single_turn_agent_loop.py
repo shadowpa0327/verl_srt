@@ -42,6 +42,10 @@ class SingleTurnAgentLoop(AgentLoopBase):
         effective_response_length = int(kwargs.get("max_tokens", self.response_length))
         sampling_params = {**sampling_params, "max_tokens": effective_response_length}
 
+        # Add per-sample seed for deterministic generation if provided
+        if "sampling_seed" in kwargs and kwargs["sampling_seed"] is not None:
+            sampling_params["seed"] = int(kwargs["sampling_seed"])
+
         metrics = {}
         request_id = uuid4().hex
 

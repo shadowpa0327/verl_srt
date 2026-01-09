@@ -813,6 +813,7 @@ class AgentLoopManager:
         secondary_attention_mask = secondary_prompts.batch.get("attention_mask")
         secondary_sampling_params = secondary_prompts.non_tensor_batch.get("sampling_params")
         secondary_max_tokens = secondary_prompts.non_tensor_batch.get("max_tokens")
+        secondary_sampling_seeds = secondary_prompts.non_tensor_batch.get("sampling_seed")
 
         for i in range(len(secondary_prompts)):
             sample_id = f"secondary_{i}"
@@ -843,6 +844,15 @@ class AgentLoopManager:
                     max_tokens_value = secondary_max_tokens[i]
                     if max_tokens_value is not None:
                         sampling_params["max_tokens"] = int(max_tokens_value)
+                except Exception:
+                    pass
+
+            # Add per-sample seed for deterministic generation if provided
+            if secondary_sampling_seeds is not None:
+                try:
+                    seed_value = secondary_sampling_seeds[i]
+                    if seed_value is not None:
+                        sampling_params["seed"] = int(seed_value)
                 except Exception:
                     pass
 
