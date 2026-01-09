@@ -229,6 +229,10 @@ class RunaheadCentralRouter:
 
         # Track secondary (runahead) load per server (subset of server_load)
         self._secondary_load: dict[int, int] = {idx: 0 for idx in range(self.num_servers)}
+        # Optimistic reservation for secondary load to prevent burst admission
+        self._secondary_reserved_load: dict[int, int] = {idx: 0 for idx in range(self.num_servers)}
+        # sample_id -> server_idx mapping for reservations
+        self._secondary_reservation_by_sample_id: dict[str, int] = {}
 
         # Track server_request_id → server_idx for targeted abort
         self._request_to_server: dict[str, int] = {}
@@ -385,6 +389,7 @@ class RunaheadCentralRouter:
             last_poll_s = self._workload_last_poll_s[idx]
             snapshot[idx] = {
                 "server_load": int(self.server_load[idx]),
+                "secondary_reserved_load": self._secondary_reserved_load.get(idx, 0),
                 "num_requests_running": self._workload_num_requests_running[idx],
                 "num_requests_waiting": self._workload_num_requests_waiting[idx],
                 "kv_cache_usage": self._workload_kv_cache_usage[idx],
@@ -649,7 +654,8 @@ class RunaheadCentralRouter:
         start = self._round_robin_start
         for i in range(self.num_servers):
             idx = (start + i) % self.num_servers
-            load = self.server_load[idx]
+            # Effective load includes optimistic reservations
+            load = self.server_load[idx] + self._secondary_reserved_load.get(idx, 0)
             if load >= best_load:
                 continue
 
@@ -955,6 +961,11 @@ class RunaheadCentralRouter:
                     except asyncio.CancelledError:
                         pass
 
+        # Cleanup any remaining reservations for tasks that never started or were cancelled before start
+        for sample_id, server_idx in list(self._secondary_reservation_by_sample_id.items()):
+            self._secondary_reserved_load[server_idx] -= 1
+            del self._secondary_reservation_by_sample_id[sample_id]
+
         # 5. Any remaining in-flight items that weren't already collected, mark as aborted.
         # Note: _execute_secondary may have already added results during the grace period,
         # so we check for existing sample_ids to avoid double-counting.
@@ -1035,6 +1046,8 @@ class RunaheadCentralRouter:
                 # 1. Collect completed in-flight tasks (non-blocking)
                 await self._collect_completed_tasks()
 
+                admitted_counts = {}
+
                 # 2. Admit new items if capacity available
                 while (len(self._in_flight_batch) < max_concurrent and
                        self._pending_queue and
@@ -1044,7 +1057,13 @@ class RunaheadCentralRouter:
                     if server_idx is None:
                         break  # No slack, wait for next poll
 
+                    # Optimistic reservation
+                    self._secondary_reserved_load[server_idx] += 1
+
                     work_item = self._pending_queue.popleft()
+                    self._secondary_reservation_by_sample_id[work_item.sample_id] = server_idx
+                    admitted_counts[server_idx] = admitted_counts.get(server_idx, 0) + 1
+
                     server_request_id = uuid4().hex
 
                     # Start task
@@ -1056,6 +1075,11 @@ class RunaheadCentralRouter:
 
                     self._batch_metrics.secondary_started += 1
                     self.total_secondary_requests += 1
+
+                if admitted_counts:
+                    logger.info(f"Admitted secondaries distribution: {admitted_counts}")
+                    # Yield to let tasks start and convert reservations to actual load
+                    await asyncio.sleep(0)
 
                 # 3. Sleep before next poll (interruptible)
                 try:
@@ -1092,6 +1116,10 @@ class RunaheadCentralRouter:
             In finally block: self._workload_kv_cache_usage[server_idx] -= estimated_kv
             See pick_slack_server() docstring for details.
         """
+        # Convert reservation to actual load
+        if self._secondary_reservation_by_sample_id.pop(work_item.sample_id, None) is not None:
+            self._secondary_reserved_load[server_idx] -= 1
+
         self.server_load[server_idx] += 1
         self._secondary_load[server_idx] += 1
 
