@@ -826,8 +826,8 @@ def main():
             shuffle_seed = None
             sampling_seed_base = None
             if config.sampling_seed >= 0:
-                shuffle_seed = config.sampling_seed + round_idx * 10000
-                sampling_seed_base = config.sampling_seed + round_idx * 10000
+                shuffle_seed = config.sampling_seed
+                sampling_seed_base = config.sampling_seed
 
             # Rebuild dataproto for each round with deterministic seeds
             primary_dp = build_primary_dataproto(
