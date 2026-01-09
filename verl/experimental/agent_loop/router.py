@@ -227,6 +227,9 @@ class RunaheadCentralRouter:
         # Track in-flight requests per server
         self.server_load = {idx: 0 for idx in range(self.num_servers)}
 
+        # Track secondary (runahead) load per server (subset of server_load)
+        self._secondary_load: dict[int, int] = {idx: 0 for idx in range(self.num_servers)}
+
         # Track server_request_id → server_idx for targeted abort
         self._request_to_server: dict[str, int] = {}
 
@@ -245,6 +248,11 @@ class RunaheadCentralRouter:
         self._workload_kv_cache_usage: list[Optional[float]] = [None] * self.num_servers
         self._workload_num_requests_running: list[Optional[int]] = [None] * self.num_servers
         self._workload_num_requests_waiting: list[Optional[int]] = [None] * self.num_servers
+        self._workload_itl_sum: list[Optional[float]] = [None] * self.num_servers
+        self._workload_itl_count: list[Optional[int]] = [None] * self.num_servers
+        # Previous values for computing per-interval ITL average
+        self._prev_itl_sum: list[Optional[float]] = [None] * self.num_servers
+        self._prev_itl_count: list[Optional[int]] = [None] * self.num_servers
         self._workload_last_poll_s: list[float] = [0.0] * self.num_servers
         self._workload_last_error: list[Optional[str]] = [None] * self.num_servers
         self._workload_last_warning: list[Optional[str]] = [None] * self.num_servers
@@ -271,6 +279,11 @@ class RunaheadCentralRouter:
 
         # Round-robin starting point for fair server selection
         self._round_robin_start: int = 0
+
+        # Time-series metrics collection
+        self._metrics_collection_enabled: bool = False
+        self._metrics_samples: list[dict[str, Any]] = []
+        self._metrics_start_time: float = 0.0
 
         logger.info(
             f"RunaheadCentralRouter initialized with {self.num_servers} servers, "
@@ -313,13 +326,17 @@ class RunaheadCentralRouter:
             require_fresh_workload: If True, require fresh metrics for admission.
             prime_cache: If True, perform one polling round before returning.
         """
+        # If metrics collection is enabled, keep polling active regardless of `enabled` param
+        if self._metrics_collection_enabled:
+            enabled = True
+
         self.use_kv_cache_admission = bool(enabled)
         self.require_fresh_workload = bool(require_fresh_workload)
         self.kv_cache_threshold = float(kv_cache_threshold)
         self.workload_poll_interval_s = float(poll_interval_s)
         self.workload_staleness_threshold_s = float(staleness_threshold_s)
 
-        if self.use_kv_cache_admission:
+        if self.use_kv_cache_admission or self._metrics_collection_enabled:
             await self._ensure_workload_polling_task()
             self._workload_polling_active = True
             if prime_cache:
@@ -377,6 +394,108 @@ class RunaheadCentralRouter:
             }
         return snapshot
 
+    # =========================================================================
+    # Time-Series Metrics Collection
+    # =========================================================================
+
+    async def start_metrics_collection(self) -> dict[str, Any]:
+        """Start recording time-series metrics samples.
+
+        Samples are collected each time _poll_all_servers() is called.
+        The workload polling must be active for samples to be collected.
+
+        Returns:
+            Dict with status and start_time.
+        """
+        self._metrics_samples.clear()
+        self._metrics_start_time = time.monotonic()
+        self._metrics_collection_enabled = True
+
+        # Ensure workload polling is active so we get samples
+        if not self._workload_polling_active:
+            await self.configure_workload_polling(enabled=True, prime_cache=True)
+
+        logger.info("RunaheadCentralRouter: Started metrics collection")
+        return {"status": "started", "start_time": self._metrics_start_time}
+
+    async def stop_metrics_collection(self) -> dict[str, Any]:
+        """Stop recording and return all collected samples.
+
+        Returns:
+            Dict with status, duration, num_samples, and samples list.
+        """
+        self._metrics_collection_enabled = False
+        duration = time.monotonic() - self._metrics_start_time
+
+        result = {
+            "status": "stopped",
+            "duration_s": duration,
+            "num_samples": len(self._metrics_samples),
+            "samples": list(self._metrics_samples),
+        }
+
+        logger.info(
+            f"RunaheadCentralRouter: Stopped metrics collection. "
+            f"duration={duration:.2f}s, samples={len(self._metrics_samples)}"
+        )
+        return result
+
+    def get_metrics_samples(self) -> list[dict[str, Any]]:
+        """Get collected samples (may be partial if still running).
+
+        Returns:
+            List of sample dicts with timestamp, wall_time, and per-server metrics.
+        """
+        return list(self._metrics_samples)
+
+    def export_metrics_csv(self, filepath: str) -> dict[str, Any]:
+        """Export collected metrics to CSV file.
+
+        Args:
+            filepath: Path to output CSV file.
+
+        Returns:
+            Dict with status and num_rows written.
+        """
+        import csv
+
+        if not self._metrics_samples:
+            logger.warning("No metrics samples to export")
+            return {"status": "empty", "num_rows": 0}
+
+        # Flatten samples to rows
+        rows = []
+        for sample in self._metrics_samples:
+            timestamp = sample["timestamp"]
+            wall_time = sample["wall_time"]
+            for server_idx, server_metrics in sample["servers"].items():
+                rows.append({
+                    "timestamp": timestamp,
+                    "wall_time": wall_time,
+                    "server_idx": server_idx,
+                    "num_requests_running": server_metrics.get("num_requests_running"),
+                    "num_requests_waiting": server_metrics.get("num_requests_waiting"),
+                    "kv_cache_usage": server_metrics.get("kv_cache_usage"),
+                    "server_load": server_metrics.get("server_load"),
+                    "secondary_load": server_metrics.get("secondary_load"),
+                    "itl_avg_ms": server_metrics.get("itl_avg_ms"),
+                })
+
+        fieldnames = [
+            "timestamp", "wall_time", "server_idx",
+            "num_requests_running", "num_requests_waiting",
+            "kv_cache_usage", "server_load", "secondary_load",
+            "itl_avg_ms",
+        ]
+
+        with open(filepath, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+
+        logger.info(f"Exported {len(rows)} metrics rows to {filepath}")
+        return {"status": "success", "num_rows": len(rows), "filepath": filepath}
+
     async def _ensure_workload_polling_task(self) -> None:
         if self._workload_poll_task is not None and not self._workload_poll_task.done():
             return
@@ -429,11 +548,17 @@ class RunaheadCentralRouter:
             running = result.get("num_requests_running")
             waiting = result.get("num_requests_waiting")
             kv_usage = result.get("kv_cache_usage")
+            itl_sum = result.get("inter_token_latency_sum")
+            itl_count = result.get("inter_token_latency_count")
 
             if isinstance(running, (int, float)):
                 self._workload_num_requests_running[idx] = int(running)
             if isinstance(waiting, (int, float)):
                 self._workload_num_requests_waiting[idx] = int(waiting)
+            if isinstance(itl_sum, (int, float)):
+                self._workload_itl_sum[idx] = float(itl_sum)
+            if isinstance(itl_count, (int, float)):
+                self._workload_itl_count[idx] = int(itl_count)
             self._workload_last_poll_s[idx] = now
 
             if isinstance(kv_usage, (int, float)):
@@ -443,6 +568,42 @@ class RunaheadCentralRouter:
                     kv /= 100.0
                 kv = max(0.0, min(1.0, kv))
                 self._workload_kv_cache_usage[idx] = kv
+
+        # Store time-series sample if metrics collection is enabled
+        if self._metrics_collection_enabled:
+            sample: dict[str, Any] = {
+                "timestamp": now - self._metrics_start_time,
+                "wall_time": time.time(),
+                "servers": {},
+            }
+            for idx in range(self.num_servers):
+                # Compute per-interval average ITL (in milliseconds)
+                itl_avg_ms = None
+                curr_sum = self._workload_itl_sum[idx]
+                curr_count = self._workload_itl_count[idx]
+                prev_sum = self._prev_itl_sum[idx]
+                prev_count = self._prev_itl_count[idx]
+
+                if (curr_sum is not None and curr_count is not None and
+                    prev_sum is not None and prev_count is not None):
+                    delta_sum = curr_sum - prev_sum
+                    delta_count = curr_count - prev_count
+                    if delta_count > 0:
+                        itl_avg_ms = (delta_sum / delta_count) * 1000  # Convert to ms
+
+                # Update previous values for next iteration
+                self._prev_itl_sum[idx] = curr_sum
+                self._prev_itl_count[idx] = curr_count
+
+                sample["servers"][idx] = {
+                    "num_requests_running": self._workload_num_requests_running[idx],
+                    "num_requests_waiting": self._workload_num_requests_waiting[idx],
+                    "kv_cache_usage": self._workload_kv_cache_usage[idx],
+                    "server_load": self.server_load.get(idx, 0),
+                    "secondary_load": self._secondary_load.get(idx, 0),
+                    "itl_avg_ms": itl_avg_ms,
+                }
+            self._metrics_samples.append(sample)
 
     def _choose_server(self, request_id: str) -> tuple[int, ray.actor.ActorHandle]:
         """Choose server using least-requests load balancing with sticky sessions."""
@@ -932,6 +1093,7 @@ class RunaheadCentralRouter:
             See pick_slack_server() docstring for details.
         """
         self.server_load[server_idx] += 1
+        self._secondary_load[server_idx] += 1
 
         try:
             server = self.server_handles[server_idx]
@@ -978,8 +1140,11 @@ class RunaheadCentralRouter:
 
         finally:
             self.server_load[server_idx] -= 1
+            self._secondary_load[server_idx] -= 1
             if self.server_load[server_idx] < 0:
                 self.server_load[server_idx] = 0
+            if self._secondary_load[server_idx] < 0:
+                self._secondary_load[server_idx] = 0
             self._request_to_server.pop(server_request_id, None)
             # Remove from in_flight AFTER adding to _batch_results (see Race Safety above)
             self._in_flight_batch.pop(work_item.sample_id, None)

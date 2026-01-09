@@ -670,6 +670,15 @@ class vLLMHttpServerBase:
                 "vllm:gpu_cache_usage_perc",
                 "vllm_gpu_cache_usage_perc",
             }
+            # Inter-token latency histogram (sum/count for computing average)
+            itl_sum_names = {
+                "vllm:inter_token_latency_seconds_sum",
+                "vllm_inter_token_latency_seconds_sum",
+            }
+            itl_count_names = {
+                "vllm:inter_token_latency_seconds_count",
+                "vllm_inter_token_latency_seconds_count",
+            }
 
             # Collect all metric names for debugging
             found_metric_names = set()
@@ -698,6 +707,10 @@ class vLLMHttpServerBase:
                         result["num_requests_waiting"] = int(value)
                     elif metric_name in kv_cache_names:
                         result["kv_cache_usage"] = value
+                    elif metric_name in itl_sum_names:
+                        result["inter_token_latency_sum"] = value
+                    elif metric_name in itl_count_names:
+                        result["inter_token_latency_count"] = int(value)
 
             # Warn if expected metrics not found
             if not result:

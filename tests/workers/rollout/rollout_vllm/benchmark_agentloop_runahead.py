@@ -203,6 +203,19 @@ def parse_args():
         "--output-file", "-o", default=None, help="JSON output file path"
     )
 
+    # Metrics collection
+    parser.add_argument(
+        "--collect-metrics",
+        action="store_true",
+        help="Collect time-series vLLM metrics (kv_cache_usage, requests_running, etc.)",
+    )
+    parser.add_argument(
+        "--metrics-output",
+        type=str,
+        default="metrics.csv",
+        help="Output CSV file for collected metrics",
+    )
+
     # Multi-round settings
     parser.add_argument(
         "--num-rounds",
@@ -798,6 +811,11 @@ def main():
         all_metrics: list[RunMetrics] = []
         measurement_metrics: list[RunMetrics] = []
 
+        # Start metrics collection if requested
+        if args.collect_metrics:
+            print("\n  Starting metrics collection...")
+            manager.start_metrics_collection()
+
         for round_idx in range(total_rounds):
             is_warmup = round_idx < config.warmup_rounds
             round_label = f"Warmup {round_idx + 1}/{config.warmup_rounds}" if is_warmup else f"Round {round_idx - config.warmup_rounds + 1}/{config.num_rounds}"
@@ -836,6 +854,19 @@ def main():
             all_metrics.append(metrics)
             if not is_warmup:
                 measurement_metrics.append(metrics)
+
+        # Stop metrics collection and export if requested
+        if args.collect_metrics:
+            print("\n  Stopping metrics collection...")
+            metrics_result = manager.stop_metrics_collection()
+            print(f"  Collected {metrics_result.get('num_samples', 0)} samples over {metrics_result.get('duration_s', 0):.2f}s")
+
+            # Export to CSV
+            export_result = manager.export_metrics_csv(args.metrics_output)
+            if export_result.get("status") == "success":
+                print(f"  Exported metrics to {args.metrics_output} ({export_result.get('num_rows', 0)} rows)")
+            else:
+                print(f"  Warning: Failed to export metrics: {export_result}")
 
         # Compute multi-round statistics
         multi_round = MultiRoundMetrics.from_rounds(measurement_metrics, warmup_rounds=config.warmup_rounds)

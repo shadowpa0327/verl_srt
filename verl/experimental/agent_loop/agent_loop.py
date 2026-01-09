@@ -1026,6 +1026,46 @@ class AgentLoopManager:
         """Clear all rollout kv cache, but don`t sleep."""
         self._run_all([replica.clear_kv_cache() for replica in self.rollout_replicas])
 
+    # =========================================================================
+    # Metrics Collection
+    # =========================================================================
+
+    def start_metrics_collection(self) -> dict:
+        """Start time-series metrics collection on the router.
+
+        Collects: num_requests_running, num_requests_waiting, kv_cache_usage
+        per server at each polling interval.
+
+        Returns:
+            Dict with status and start_time.
+        """
+        if self.router is None:
+            return {"error": "No router configured - metrics collection requires runahead mode"}
+        return ray.get(self.router.start_metrics_collection.remote())
+
+    def stop_metrics_collection(self) -> dict:
+        """Stop metrics collection and return all collected samples.
+
+        Returns:
+            Dict with status, duration_s, num_samples, and samples list.
+        """
+        if self.router is None:
+            return {"error": "No router configured"}
+        return ray.get(self.router.stop_metrics_collection.remote())
+
+    def export_metrics_csv(self, filepath: str) -> dict:
+        """Export collected metrics to CSV file.
+
+        Args:
+            filepath: Path to output CSV file.
+
+        Returns:
+            Dict with status and num_rows.
+        """
+        if self.router is None:
+            return {"error": "No router configured"}
+        return ray.get(self.router.export_metrics_csv.remote(filepath))
+
     def _run_all(self, tasks: list[asyncio.Task]):
         async def run_all():
             await asyncio.gather(*tasks)
