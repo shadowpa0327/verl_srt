@@ -68,18 +68,18 @@ done
 # =============================================================================
 
 # Parameter arrays
-PRIMARY_SIZES=(512 1024)
-LONG_TAIL_RATIOS=(0.05 0.1)
+PRIMARY_SIZES=(2048)
+LONG_TAIL_RATIOS=(0.05)
 LOAD_THRESHOLDS=(16 32 64)
 MAX_SECONDARY_CONCURRENT=(64 128 256)
 
 # Hardware settings (adjust for your setup)
-NUM_GPUS=4
+NUM_GPUS=8
 TP_SIZE=1
-NUM_WORKERS=4
+NUM_WORKERS=8
 
 # Model settings
-MODEL_PATH="Qwen/Qwen3-8B"
+MODEL_PATH="/opt/tiger/verl_srt/Qwen3-8B"
 
 # Multi-round settings
 NUM_ROUNDS=3
