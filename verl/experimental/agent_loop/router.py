@@ -46,8 +46,18 @@ from verl.workers.rollout.replica import TokenOutput
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
+# Ray async actor concurrency.
+#
+# Why this exists:
+# - Ray async actors have a default concurrency limit (commonly 1000).
+# - For large `primary_size` (e.g. 2048) the router becomes the bottleneck and caps
+#   the number of in-flight generate() calls, even if vLLM servers have capacity.
+#
+# Keep it configurable so benchmarks/training can tune without code changes.
+_ROUTER_MAX_CONCURRENCY = int(os.getenv("VERL_AGENT_LOOP_ROUTER_MAX_CONCURRENCY", "4096"))
 
-@ray.remote
+
+@ray.remote(max_concurrency=_ROUTER_MAX_CONCURRENCY)
 class CentralRouter:
     """
     Central router for all AgentLoopWorkers to vLLM servers.
@@ -171,7 +181,7 @@ class CentralRouter:
         return self.total_requests
 
 
-@ray.remote
+@ray.remote(max_concurrency=_ROUTER_MAX_CONCURRENCY)
 class RunaheadCentralRouter:
     """
     Central router with run-ahead (secondary) request support and router-owned queue.
