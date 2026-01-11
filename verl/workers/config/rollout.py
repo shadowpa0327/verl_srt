@@ -215,6 +215,10 @@ class RolloutConfig(BaseConfig):
 
     enable_sleep_mode: bool = True
 
+    # vLLM scheduler policy: "fcfs" (first come first served) or "priority"
+    # Use "priority" with runahead to ensure primary requests are processed first
+    scheduling_policy: str = "priority"
+
     def __post_init__(self):
         """Validate the rollout config"""
         if self.expert_parallel_size > 1:

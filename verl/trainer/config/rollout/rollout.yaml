@@ -281,6 +281,10 @@ skip_tokenizer_init: True
 # When enabled (True), the rollout will record the routing decisions.
 enable_rollout_routing_replay: False
 
+# vLLM scheduler policy: "fcfs" (first come first served) or "priority"
+# Use "priority" with runahead to ensure primary requests are processed first
+scheduling_policy: priority
+
 
 # profile the rollout model in `generate_sequence` 
 profiler:

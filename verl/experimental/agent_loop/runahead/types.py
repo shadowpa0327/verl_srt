@@ -84,6 +84,7 @@ class SecondaryWorkItem:
         sampling_params: Sampling parameters for generation.
         retry_count: Number of times this item has been retried (managed by router).
         image_data: Optional multi-modal image data.
+        priority: Request priority (lower value = higher priority). Default 10 for runahead.
     """
 
     sample_id: str
@@ -91,6 +92,7 @@ class SecondaryWorkItem:
     sampling_params: dict
     retry_count: int = 0
     image_data: Optional[list[Any]] = None
+    priority: int = 10  # Lower priority for runahead (primary uses 0)
 
 
 @dataclass

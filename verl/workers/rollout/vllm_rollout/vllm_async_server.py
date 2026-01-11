@@ -297,6 +297,7 @@ class vLLMHttpServerBase:
             "override_generation_config": json.dumps(override_generation_config),
             "quantization": quantization,
             "hf_overrides": {"quantization_config": fp8_block_quant_kwargs} if quantization == "fp8" else None,
+            "scheduling_policy": self.config.scheduling_policy,
             **engine_kwargs,
         }
 
@@ -453,6 +454,7 @@ class vLLMHttpServerBase:
         sampling_params: dict[str, Any],
         request_id: str,
         image_data: Optional[list[Any]] = None,
+        priority: int = 0,
     ) -> TokenOutput:
         """Generate sequence with token-in-token-out."""
         # TODO(@wuxibin): switch to `/generate` http endpoint once multi-modal support ready.
@@ -486,7 +488,11 @@ class vLLMHttpServerBase:
                 )
 
         generator = self.engine.generate(
-            prompt=prompt, sampling_params=sampling_params, request_id=request_id, lora_request=lora_request
+            prompt=prompt,
+            sampling_params=sampling_params,
+            request_id=request_id,
+            lora_request=lora_request,
+            priority=priority,
         )
 
         # Get final response

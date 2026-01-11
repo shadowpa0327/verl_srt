@@ -142,10 +142,10 @@ def parse_args():
     )
 
     # Hardware settings
-    parser.add_argument("--num-gpus", type=int, default=4, help="Number of GPUs")
+    parser.add_argument("--num-gpus", type=int, default=1, help="Number of GPUs")
     parser.add_argument("--tp-size", type=int, default=1, help="Tensor parallel size")
     parser.add_argument(
-        "--num-workers", type=int, default=4, help="Number of agent workers"
+        "--num-workers", type=int, default=1, help="Number of agent workers"
     )
 
     # Workload settings
@@ -168,9 +168,29 @@ def parse_args():
         help="Maximum prompt length in tokens (prompts exceeding this are filtered out)",
     )
 
+    # Scheduling policy
+    parser.add_argument(
+        "--scheduling-policy",
+        choices=["fcfs", "priority"],
+        default="priority",
+        help="vLLM scheduling policy (use 'priority' for runahead)",
+    )
+
     # Runahead settings
     parser.add_argument(
         "--load-threshold", type=int, default=16, help="Runahead admission threshold"
+    )
+    parser.add_argument(
+        "--primary-priority",
+        type=int,
+        default=0,
+        help="Priority for primary requests (lower = higher priority)",
+    )
+    parser.add_argument(
+        "--secondary-priority",
+        type=int,
+        default=10,
+        help="Priority for secondary/runahead requests",
     )
     parser.add_argument(
         "--max-secondary-concurrent",
@@ -265,10 +285,17 @@ class BenchmarkConfig:
     long_max_tokens: int = 16384
     max_prompt_length: int = 512
 
+    # Scheduling policy
+    scheduling_policy: str = "priority"
+
     # Runahead settings
     load_threshold: int = 16
     max_secondary_concurrent: int = 64
     admit_loop_poll_s: float = 0.05
+
+    # Priority settings
+    primary_priority: int = 0
+    secondary_priority: int = 10
 
     # Output
     output_file: Optional[str] = None
@@ -301,9 +328,12 @@ class BenchmarkConfig:
             short_max_tokens=args.short_max_tokens,
             long_max_tokens=args.long_max_tokens,
             max_prompt_length=args.max_prompt_length,
+            scheduling_policy=args.scheduling_policy,
             load_threshold=args.load_threshold,
             max_secondary_concurrent=args.max_secondary_concurrent,
             admit_loop_poll_s=args.admit_loop_poll_s,
+            primary_priority=args.primary_priority,
+            secondary_priority=args.secondary_priority,
             output_file=args.output_file,
             dataset_seed=args.dataset_seed,
             dataset_cache_dir=args.dataset_cache_dir,
@@ -445,7 +475,8 @@ def compose_hydra_config(config: BenchmarkConfig) -> DictConfig:
     hydra_config.actor_rollout_ref.rollout.tensor_model_parallel_size = config.tp_size
     hydra_config.actor_rollout_ref.rollout.data_parallel_size = 1
     hydra_config.actor_rollout_ref.rollout.pipeline_model_parallel_size = 1
-    hydra_config.actor_rollout_ref.rollout.enable_prefix_caching = False    
+    hydra_config.actor_rollout_ref.rollout.enable_prefix_caching = False
+    hydra_config.actor_rollout_ref.rollout.scheduling_policy = config.scheduling_policy
 
     # Token length bounds
     hydra_config.actor_rollout_ref.rollout.prompt_length = config.max_prompt_length
@@ -716,8 +747,10 @@ def main():
     print(f"Workers: {config.num_workers}")
     print(f"Primary size: {config.primary_size} | Long-tail ratio: {config.long_tail_ratio:.0%}")
     print(f"Short max tokens: {config.short_max_tokens} | Long max tokens: {config.long_max_tokens}")
+    print(f"Scheduling policy: {config.scheduling_policy}")
     if args.mode == "runahead":
         print(f"Load threshold: {config.load_threshold} | Max secondary concurrent: {config.max_secondary_concurrent}")
+        print(f"Priority: primary={config.primary_priority}, secondary={config.secondary_priority}")
     print(f"Rounds: {config.num_rounds} measurement + {config.warmup_rounds} warmup = {total_rounds} total")
     print("=" * 80)
 
@@ -804,6 +837,8 @@ def main():
                 admit_loop_poll_s=config.admit_loop_poll_s,
                 max_secondary_concurrent=config.max_secondary_concurrent,
                 max_queue_size=config.primary_size,  # Allow queueing all secondary requests
+                primary_priority=config.primary_priority,
+                secondary_priority=config.secondary_priority,
             )
 
         # Run multiple rounds

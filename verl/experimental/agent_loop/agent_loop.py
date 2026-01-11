@@ -789,11 +789,13 @@ class AgentLoopManager:
     def _build_secondary_work_items(
         self,
         secondary_prompts: "DataProto",
+        secondary_priority: int = 10,
     ) -> list["SecondaryWorkItem"]:
         """Convert DataProto to list of SecondaryWorkItem for runahead.
 
         Args:
             secondary_prompts: Future batch prompts as DataProto.
+            secondary_priority: Priority for secondary requests (lower = higher priority).
 
         Returns:
             List of SecondaryWorkItem ready for router submission.
@@ -860,6 +862,7 @@ class AgentLoopManager:
                 sample_id=sample_id,
                 prompt_ids=prompt_ids,
                 sampling_params=sampling_params,
+                priority=secondary_priority,
             )
             work_items.append(work_item)
 
@@ -903,8 +906,9 @@ class AgentLoopManager:
             primary_output = self.generate_sequences(primary_prompts)
             return RunaheadResult(primary_outputs=primary_output)
 
-        # Ensure router admission threshold matches this run
+        # Ensure router admission threshold and primary priority match this run
         ray.get(self.router.set_load_threshold.remote(runahead_config.load_threshold))
+        ray.get(self.router.set_primary_priority.remote(runahead_config.primary_priority))
 
         # Wake up servers
         self.wake_up()
@@ -924,7 +928,10 @@ class AgentLoopManager:
 
         # ========== SETUP: Build secondary work items ==========
 
-        work_items = self._build_secondary_work_items(secondary_prompts)
+        work_items = self._build_secondary_work_items(
+            secondary_prompts,
+            secondary_priority=runahead_config.secondary_priority,
+        )
 
         # ========== SUBMIT SECONDARY BATCH TO ROUTER ==========
 

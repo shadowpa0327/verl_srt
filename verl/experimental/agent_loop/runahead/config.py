@@ -72,3 +72,10 @@ class RunaheadConfig:
 
     # Admission warm-up: avoid starting secondaries before primaries register load.
     wait_for_primary_start: bool = True
+
+    # Priority scheduling (lower value = higher priority)
+    # vLLM scheduler must be set to "priority" policy for these to take effect.
+    # With priority scheduling, primary requests are processed first and runahead
+    # requests are preempted when KV cache is exhausted.
+    primary_priority: int = 0        # Primary batch requests get highest priority
+    secondary_priority: int = 10     # Runahead requests get lower priority

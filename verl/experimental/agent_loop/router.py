@@ -291,6 +291,9 @@ class RunaheadCentralRouter:
         self._admit_loop_stop: asyncio.Event = asyncio.Event()
         self._admit_loop_config: dict[str, Any] = {}
 
+        # Primary request priority (can be set per-batch via set_primary_priority)
+        self._primary_priority: int = 0
+
         # Round-robin starting point for fair server selection
         self._round_robin_start: int = 0
 
@@ -315,6 +318,18 @@ class RunaheadCentralRouter:
         """
         self.load_threshold = int(load_threshold)
         return self.load_threshold
+
+    def set_primary_priority(self, priority: int) -> int:
+        """Set the priority for primary requests.
+
+        Args:
+            priority: Priority value (lower = higher priority). Default is 0.
+
+        Returns:
+            The updated priority.
+        """
+        self._primary_priority = int(priority)
+        return self._primary_priority
 
     async def configure_workload_polling(
         self,
@@ -696,8 +711,25 @@ class RunaheadCentralRouter:
         prompt_ids: list[int],
         sampling_params: dict[str, Any],
         image_data: Optional[list[Any]] = None,
+        priority: Optional[int] = None,
     ) -> TokenOutput:
-        """Route primary generate request to appropriate server."""
+        """Route primary generate request to appropriate server.
+
+        Args:
+            request_id: Request ID for sticky session routing.
+            prompt_ids: List of prompt token IDs.
+            sampling_params: Sampling parameters for generation.
+            image_data: Optional multi-modal image data.
+            priority: Request priority (lower = higher priority). If None, uses
+                the router's configured primary priority (default 0).
+
+        Returns:
+            TokenOutput from the vLLM server.
+        """
+        # Use configured primary priority if not explicitly provided
+        if priority is None:
+            priority = self._primary_priority
+
         self.total_requests += 1
         server_idx, server = self._choose_server(request_id)
         self.server_load[server_idx] += 1
@@ -711,11 +743,11 @@ class RunaheadCentralRouter:
                 prompt_ids=prompt_ids,
                 sampling_params=sampling_params,
                 image_data=image_data,
+                priority=priority,
             )
             return output
         finally:
             self.server_load[server_idx] -= 1
-            #print(f"Completed primary request {request_id} on server_idx={server_idx}, current load={self.server_load}")
             if self.server_load[server_idx] < 0:
                 logger.warning(
                     "RunaheadCentralRouter server_load went negative for server_idx=%s; resetting to 0.",
@@ -1140,6 +1172,7 @@ class RunaheadCentralRouter:
                 prompt_ids=work_item.prompt_ids,
                 sampling_params=work_item.sampling_params,
                 image_data=work_item.image_data,
+                priority=work_item.priority,
             )
 
             if output is not None:
