@@ -939,6 +939,10 @@ class AgentLoopManager:
         primary_total_start = 0
         if runahead_config.wait_for_primary_start and work_items:
             primary_total_start = ray.get(self.router.get_total_requests.remote())
+            # Reserve primary load to prevent startup race (secondaries admitted before
+            # primaries register load). Reservations are released incrementally as
+            # primaries arrive at router.generate().
+            ray.get(self.router.reserve_primary_load.remote(len(primary_prompts)))
 
         # Launch primary batch
         primary_chunks = primary_prompts.chunk(len(self.agent_loop_workers))

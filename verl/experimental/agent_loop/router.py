@@ -244,6 +244,11 @@ class RunaheadCentralRouter:
         # sample_id -> server_idx mapping for reservations
         self._secondary_reservation_by_sample_id: dict[str, int] = {}
 
+        # Primary reservation to prevent startup race where secondaries are admitted
+        # before primaries have registered load at the router. Uses global tracking
+        # (not per-server) to avoid mismatch when primaries don't distribute evenly.
+        self._primary_reserved_total: int = 0
+
         # Track server_request_id → server_idx for targeted abort
         self._request_to_server: dict[str, int] = {}
 
@@ -330,6 +335,34 @@ class RunaheadCentralRouter:
         """
         self._primary_priority = int(priority)
         return self._primary_priority
+
+    def reserve_primary_load(self, total_primaries: int) -> dict[str, Any]:
+        """Reserve load for expected primary requests to prevent startup race.
+
+        When secondaries start before primaries, server_load is still low and
+        admission is overly optimistic. This reserves capacity globally (not
+        per-server) to avoid mismatch when primaries don't distribute evenly
+        due to load balancing or sticky sessions. Each primary that arrives
+        at generate() releases one reservation from the global pool.
+
+        Args:
+            total_primaries: Total number of primary requests expected.
+
+        Returns:
+            Dict with reservation total and estimated per-server load.
+        """
+        self._primary_reserved_total = total_primaries
+        per_server_estimate = total_primaries // self.num_servers
+
+        logger.info(
+            f"RunaheadCentralRouter: Reserved primary load for {total_primaries} requests "
+            f"(~{per_server_estimate} per server)"
+        )
+
+        return {
+            "total_primaries": total_primaries,
+            "per_server_estimate": per_server_estimate,
+        }
 
     async def configure_workload_polling(
         self,
@@ -671,6 +704,12 @@ class RunaheadCentralRouter:
         reservation: increment cached kv_cache_usage by an estimate when admitting,
         decrement when request completes. This prevents over-admission between polls.
         """
+        # Block ALL secondaries until primaries fully registered at the router.
+        # This prevents the startup race where secondaries are admitted before
+        # primaries have converted their reservations to actual server_load.
+        if self._primary_reserved_total > 0:
+            return None
+
         best_idx = None
         best_load = self.load_threshold  # Start at threshold
         now = time.monotonic()
@@ -679,8 +718,10 @@ class RunaheadCentralRouter:
         start = self._round_robin_start
         for i in range(self.num_servers):
             idx = (start + i) % self.num_servers
-            # Effective load includes optimistic reservations
-            load = self.server_load[idx] + self._secondary_reserved_load.get(idx, 0)
+            # Effective load includes secondary reservations only
+            # (primary reservations block entirely via check above)
+            load = (self.server_load[idx] +
+                    self._secondary_reserved_load.get(idx, 0))
             if load >= best_load:
                 continue
 
@@ -732,6 +773,11 @@ class RunaheadCentralRouter:
 
         self.total_requests += 1
         server_idx, server = self._choose_server(request_id)
+
+        # Release one primary reservation if active (converts reservation to actual load)
+        if self._primary_reserved_total > 0:
+            self._primary_reserved_total -= 1
+
         self.server_load[server_idx] += 1
 
         # Generate unique server request ID
@@ -1007,6 +1053,14 @@ class RunaheadCentralRouter:
         for sample_id, server_idx in list(self._secondary_reservation_by_sample_id.items()):
             self._secondary_reserved_load[server_idx] -= 1
             del self._secondary_reservation_by_sample_id[sample_id]
+
+        # Cleanup unredeemed primary reservations (defensive - should already be released)
+        if self._primary_reserved_total > 0:
+            logger.info(
+                f"RunaheadCentralRouter: Clearing {self._primary_reserved_total} "
+                "unredeemed primary reservations"
+            )
+            self._primary_reserved_total = 0
 
         # 5. Any remaining in-flight items that weren't already collected, mark as aborted.
         # Note: _execute_secondary may have already added results during the grace period,
