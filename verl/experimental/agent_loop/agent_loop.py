@@ -965,7 +965,6 @@ class AgentLoopManager:
         if work_items:
             ray.get(self.router.start_runahead_batch.remote(
                 work_items,
-                max_concurrent=runahead_config.max_secondary_concurrent,
                 poll_interval_s=runahead_config.admit_loop_poll_s,
                 max_queue_size=runahead_config.max_queue_size,
             ))

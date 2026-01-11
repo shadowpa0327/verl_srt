@@ -34,8 +34,7 @@ class RunaheadConfig:
         enabled: Whether run-ahead is enabled.
         load_threshold: Admit secondary requests when server_load < threshold.
             Server load is the count of in-flight requests (running + waiting).
-        max_secondary_concurrent: Maximum number of secondary requests in flight at once.
-            This is a hard cap to prevent secondary explosion under long primaries.
+            This per-server gate naturally limits total secondaries in flight.
         max_queue_size: Maximum number of pending secondary items in the router queue.
             Oldest items are dropped if queue overflows.
         admit_loop_poll_s: How often the router's admit loop polls for slack (seconds).
@@ -54,7 +53,6 @@ class RunaheadConfig:
 
     enabled: bool = False
     load_threshold: int = 32
-    max_secondary_concurrent: int = 8
 
     # Router queue settings
     max_queue_size: int = 256

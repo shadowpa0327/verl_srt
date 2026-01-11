@@ -203,7 +203,7 @@ class RunaheadCentralRouter:
         output = await router.generate.remote(request_id, prompt_ids=..., ...)
 
         # Secondary requests via batch API:
-        await router.start_runahead_batch.remote(work_items, max_concurrent=8)
+        await router.start_runahead_batch.remote(work_items)
         # ... run primary batch ...
         result = await router.stop_runahead_batch.remote(abort_grace_s=1.0)
         # result.outputs contains completed/aborted/rejected SecondaryOutput items
@@ -897,7 +897,6 @@ class RunaheadCentralRouter:
         self,
         items: list[SecondaryWorkItem],
         *,
-        max_concurrent: int = 8,
         poll_interval_s: float = 0.05,
         max_queue_size: int = 256,
     ) -> dict[str, Any]:
@@ -909,9 +908,11 @@ class RunaheadCentralRouter:
         With the router-owned queue model, capacity-based rejection is eliminated:
         items wait in the queue until slack exists. No retry logic is needed.
 
+        Admission is gated by load_threshold on a per-server basis. This naturally
+        limits total secondaries in flight without needing a global cap.
+
         Args:
             items: List of SecondaryWorkItem to process.
-            max_concurrent: Maximum concurrent in-flight secondary requests.
             poll_interval_s: Polling interval for admit loop (seconds).
             max_queue_size: Maximum pending items in queue (oldest dropped on overflow).
 
@@ -935,7 +936,6 @@ class RunaheadCentralRouter:
 
         # Store config for admit loop
         self._admit_loop_config = {
-            "max_concurrent": max_concurrent,
             "poll_interval_s": poll_interval_s,
             "max_queue_size": max_queue_size,
         }
@@ -958,8 +958,7 @@ class RunaheadCentralRouter:
         self._admit_loop_task = asyncio.create_task(self._admit_loop())
 
         logger.info(
-            f"RunaheadCentralRouter started batch {self._batch_id} with {len(self._pending_queue)} items, "
-            f"max_concurrent={max_concurrent}"
+            f"RunaheadCentralRouter started batch {self._batch_id} with {len(self._pending_queue)} items"
         )
 
         return {
@@ -1130,11 +1129,10 @@ class RunaheadCentralRouter:
 
         Loop invariant:
         - Runs while _batch_active and not _admit_loop_stop.is_set()
-        - Admits at most max_concurrent items at a time
+        - Admits items when per-server slack exists (server_load < load_threshold)
         - Items wait in queue until slack exists (no retry needed)
         - Collects results from completed tasks
         """
-        max_concurrent = self._admit_loop_config.get("max_concurrent", 8)
         poll_interval_s = self._admit_loop_config.get("poll_interval_s", 0.05)
 
         try:
@@ -1144,9 +1142,8 @@ class RunaheadCentralRouter:
 
                 admitted_counts = {}
 
-                # 2. Admit new items if capacity available
-                while (len(self._in_flight_batch) < max_concurrent and
-                       self._pending_queue and
+                # 2. Admit new items if per-server slack available
+                while (self._pending_queue and
                        not self._admit_loop_stop.is_set()):
 
                     server_idx = self.pick_slack_server()

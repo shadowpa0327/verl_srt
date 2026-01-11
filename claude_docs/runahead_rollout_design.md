@@ -13,7 +13,9 @@
 - Result caching and reuse
 - Trainer integration
 - Multi-turn agent speculation
-- vLLM priority scheduling (defer)
+
+**Implemented but optional:**
+- vLLM priority scheduling (requires `scheduler_policy: "priority"` in vLLM config)
 
 ---
 
@@ -63,7 +65,18 @@ GPU Utilization:
 
 ### The Solution: Runahead Fills Bubbles
 
-Runahead detects when capacity becomes available and speculatively starts future batch (secondary) requests:
+Runahead detects when capacity becomes available and speculatively starts future batch (secondary) requests.
+
+**Important: Startup Race Prevention**
+
+A critical timing issue exists: when primaries are dispatched via Ray async actors, there's a
+~1.5s window before they arrive at `router.generate()` and increment `server_load`. During this
+window, the router sees `server_load=0` and would admit secondaries prematurely.
+
+**Primary Reservation** solves this by blocking ALL secondary admission until all primaries have
+arrived at the router. The manager calls `reserve_primary_load(N)` before dispatching primaries,
+and each primary arriving at `generate()` releases one reservation. Secondaries are only admitted
+when `_primary_reserved_total = 0`.
 
 ```
 Time ──────────────────────────────────────────────────────────────────────────>
@@ -358,17 +371,31 @@ class RunaheadMetrics:
 class RunaheadConfig:
     """Runahead configuration."""
 
-    # Server-side limits
-    secondary_frac: float = 0.20              # Max 20% of server capacity for secondary
-    primary_headroom: int = 8                 # Always reserve 8 slots for primary
+    enabled: bool = False                     # Whether run-ahead is enabled
 
-    # Per-worker limits
-    max_secondary_concurrent: int = 4         # Max secondary tasks per worker
-    max_secondary_tokens: int = 64            # Truncate secondary output (reduce abort waste)
+    # Admission control (per-server gating naturally limits total secondaries)
+    load_threshold: int = 32                  # Admit secondary when server_load < threshold
 
-    # Retry behavior
-    rejection_backoff_ms: int = 50            # Backoff on server rejection
-    max_retries: int = 3                      # Max retry attempts per secondary request
+    # Router queue settings
+    max_queue_size: int = 256                 # Max pending secondary items in queue
+    admit_loop_poll_s: float = 0.05           # How often router polls for slack (seconds)
+
+    # Optional workload-aware admission (kv cache as a coarse safety valve)
+    use_kv_cache_admission: bool = False
+    kv_cache_threshold: float = 0.85          # Reject secondary when kv_cache >= threshold
+    workload_poll_interval_s: float = 0.5     # Background polling interval for workload
+    workload_staleness_threshold_s: float = 2.0
+    require_fresh_workload: bool = False
+
+    # Abort handling
+    abort_grace_s: float = 1.0                # Grace period for aborted secondaries
+
+    # Startup race prevention
+    wait_for_primary_start: bool = True       # Block secondaries until primaries registered
+
+    # Priority scheduling (vLLM scheduler must be set to "priority" policy)
+    primary_priority: int = 0                 # Primary batch requests get highest priority
+    secondary_priority: int = 10              # Runahead requests get lower priority
 ```
 
 ---
@@ -468,7 +495,12 @@ class RunaheadConfig:
 
 Extension to `CentralRouter` with:
 
-- **Secondary admission**: Only admit when `server_load < load_threshold`
+- **Primary reservation**: Blocks ALL secondary admission until all primaries have arrived
+  at the router. The manager calls `reserve_primary_load(N)` before dispatching, and each
+  primary arriving at `generate()` releases one reservation. Uses global tracking (not
+  per-server) to avoid distribution mismatch when primaries don't spread evenly.
+- **Secondary admission**: Only admit when `server_load < load_threshold` AND
+  `_primary_reserved_total == 0`
 - **Secondary routing**: Least-loaded server (doesn't touch primary sticky session cache)
 - **Request tracking**: Maps `server_request_id → server_idx` for targeted abort
 - **Targeted abort**: Groups requests by server, issues per-id `abort_request()` calls
@@ -747,12 +779,13 @@ This section details the continuous slack-filling approach implemented in
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `load_threshold` | 32 | Max (running + waiting) to consider server has slack |
+| `load_threshold` | 32 | Per-server gate: admit when server_load < threshold |
+| `max_queue_size` | 256 | Max pending secondary items in router queue |
+| `admit_loop_poll_s` | 0.05 | How often router polls for slack (50ms) |
 | `kv_cache_threshold` | 0.85 | Max KV cache usage (85%) |
-| `budget_per_server` | 1 | Max runahead in-flight per server per worker |
-| `poll_interval_s` | 0.1 | How often to check slack (100ms) |
-| `poll_jitter_s` | 0.03 | Random jitter to reduce herding (0-30ms) |
-| `workload_cache_ttl_s` | 0.3 | Cache workload queries (300ms) |
+| `wait_for_primary_start` | True | Block secondaries until all primaries registered |
+| `primary_priority` | 0 | Priority for primary requests (lower = higher) |
+| `secondary_priority` | 10 | Priority for runahead requests |
 
 ### Timeline Example (2 servers, budget=1)
 
@@ -828,7 +861,8 @@ RUNAHEAD:  ═══════════════════════
 
 | Condition | Runahead Submitted? |
 |-----------|---------------------|
-| All primaries running, servers busy | No (no slack) |
+| Primary dispatch window (~1.5s) | No (primary reservation blocks) |
+| All primaries arrived, servers busy | No (no slack) |
 | Some primaries complete, server load drops | **Yes** (slack detected) |
 | Runahead already in-flight on server | No (budget exhausted) |
 | KV cache > 85% | No (memory pressure) |
@@ -844,3 +878,62 @@ efficient than one-shot batch triggers because:
 2. Backpressure stops feeding automatically when servers get busy
 3. Per-server budgets prevent overloading individual servers
 4. Safe cancellation ensures no orphaned requests
+
+---
+
+## Primary Reservation (Startup Race Prevention)
+
+### The Problem: Startup Race Condition
+
+When primaries are dispatched via Ray async actors, there's a timing window (~1.5s for 2048
+requests) before they arrive at `router.generate()` and increment `server_load`:
+
+```
+Time 0:      Manager dispatches 2048 primaries via Ray
+             router.server_load = 0 (primaries still in Ray async queue)
+
+Time 0-1.5s: Ray delivers primaries to workers
+             Primaries enter router.generate() incrementally
+             server_load increases: 0 → 100 → 500 → 1000 → ...
+
+Problem:     At time 0, server_load=0 looks like slack!
+             Secondaries get admitted before primaries even start.
+```
+
+### The Solution: Primary Reservation
+
+The manager calls `reserve_primary_load(N)` before dispatching primaries, setting
+`_primary_reserved_total = N`. Each primary arriving at `generate()` decrements this counter.
+`pick_slack_server()` blocks ALL secondaries while `_primary_reserved_total > 0`.
+
+```
+Time 0:      reserve_primary_load(2048)
+             _primary_reserved_total = 2048
+             pick_slack_server() returns None → ALL secondaries blocked
+
+Time 0-1.5s: Primaries arrive at router.generate()
+             Each: _primary_reserved_total -= 1
+             Still > 0 → Still blocked
+
+Time ~1.5s:  Last primary arrives
+             _primary_reserved_total = 0
+             pick_slack_server() uses actual server_load
+             Secondary admission begins based on real slack
+```
+
+### Why Global (Not Per-Server) Tracking
+
+Primary reservation uses a single global counter rather than per-server distribution because:
+
+1. Primaries don't distribute evenly across servers (load balancing, sticky sessions)
+2. Per-server estimation (`total // num_servers`) creates mismatch when distribution is uneven
+3. The goal is simple: block until ALL primaries have registered, then use actual `server_load`
+
+```python
+# In pick_slack_server():
+if self._primary_reserved_total > 0:
+    return None  # Block ALL secondaries
+
+# Use actual server_load only (no reservation estimate)
+load = self.server_load[idx] + self._secondary_reserved_load.get(idx, 0)
+```
