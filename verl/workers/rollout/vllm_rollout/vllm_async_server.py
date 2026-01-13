@@ -735,6 +735,112 @@ class vLLMHttpServerBase:
             logger.error(f"Error getting workload metrics: {e}")
             return {"error": str(e)}
 
+    async def get_spec_decode_metrics(self) -> dict[str, Any]:
+        """Get speculative decoding metrics from vLLM server via Prometheus /metrics endpoint.
+
+        Returns:
+            dict[str, Any]: Dictionary containing speculative decoding counters:
+                - spec_decode_num_accepted_tokens: Number of accepted tokens (counter)
+                - spec_decode_num_draft_tokens: Number of draft tokens (counter)
+                - spec_decode_num_drafts: Number of spec decoding drafts (counter)
+                - spec_decode_num_accepted_tokens_per_pos: Dict mapping position to count (counter)
+
+        Note: These are cumulative counters. To get per-rollout metrics, capture before/after
+        and compute the delta.
+        """
+        if self.node_rank != 0:
+            return {"error": "Metrics only available on node_rank=0"}
+
+        if self._server_port is None:
+            return {"error": "Server not yet started"}
+
+        try:
+            import aiohttp
+
+            metrics_url = f"http://{self._server_address}:{self._server_port}/metrics"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(metrics_url, timeout=aiohttp.ClientTimeout(total=5)) as response:
+                    if response.status != 200:
+                        return {"error": f"Failed to fetch metrics: HTTP {response.status}"}
+                    metrics_text = await response.text()
+
+            if not metrics_text.strip():
+                logger.warning("Prometheus /metrics endpoint returned empty response")
+                return {"error": "Empty metrics response"}
+
+            # Parse Prometheus format metrics for spec decode counters
+            result: dict[str, Any] = {}
+            per_pos_metrics: dict[int, float] = {}
+
+            # Metric name variants across vLLM versions (including _total suffix for counters)
+            accepted_names = {
+                "vllm:spec_decode_num_accepted_tokens",
+                "vllm:spec_decode_num_accepted_tokens_total",
+                "vllm_spec_decode_num_accepted_tokens",
+                "vllm_spec_decode_num_accepted_tokens_total",
+            }
+            draft_names = {
+                "vllm:spec_decode_num_draft_tokens",
+                "vllm:spec_decode_num_draft_tokens_total",
+                "vllm_spec_decode_num_draft_tokens",
+                "vllm_spec_decode_num_draft_tokens_total",
+            }
+            num_drafts_names = {
+                "vllm:spec_decode_num_drafts",
+                "vllm:spec_decode_num_drafts_total",
+                "vllm_spec_decode_num_drafts",
+                "vllm_spec_decode_num_drafts_total",
+            }
+            per_pos_names = {
+                "vllm:spec_decode_num_accepted_tokens_per_pos",
+                "vllm:spec_decode_num_accepted_tokens_per_pos_total",
+                "vllm_spec_decode_num_accepted_tokens_per_pos",
+                "vllm_spec_decode_num_accepted_tokens_per_pos_total",
+            }
+
+            for line in metrics_text.split("\n"):
+                line = line.strip()
+                if line.startswith("#") or not line:
+                    continue
+
+                # Parse metric lines: metric_name{labels} value or metric_name value
+                if " " in line:
+                    metric_part, value_str = line.rsplit(" ", 1)
+                    try:
+                        value = float(value_str)
+                    except ValueError:
+                        continue
+
+                    # Extract metric name (without labels)
+                    metric_name = metric_part.split("{")[0]
+
+                    # Extract the metrics we care about
+                    if metric_name in accepted_names:
+                        result["spec_decode_num_accepted_tokens"] = value
+                    elif metric_name in draft_names:
+                        result["spec_decode_num_draft_tokens"] = value
+                    elif metric_name in num_drafts_names:
+                        result["spec_decode_num_drafts"] = value
+                    elif metric_name in per_pos_names:
+                        # Parse position from labels: metric_name{position="0"} value
+                        if "{" in metric_part:
+                            labels = metric_part.split("{")[1].rstrip("}")
+                            for label in labels.split(","):
+                                if label.startswith("position="):
+                                    pos_str = label.split("=")[1].strip('"')
+                                    try:
+                                        pos = int(pos_str)
+                                        per_pos_metrics[pos] = value
+                                    except ValueError:
+                                        pass
+
+            if per_pos_metrics:
+                result["spec_decode_num_accepted_tokens_per_pos"] = per_pos_metrics
+            return result
+
+        except Exception as e:
+            logger.error(f"Error getting spec decode metrics: {e}")
+            return {"error": str(e)}
 
 @ray.remote(num_cpus=1)
 class vLLMHttpServer(vLLMHttpServerBase):
@@ -907,6 +1013,25 @@ class vLLMReplica(RolloutReplica):
         """
         # Only the first server (node_rank=0) has the metrics endpoint
         result = await self.servers[0].get_workload.remote()
+        result["replica_rank"] = self.replica_rank
+        return result
+
+    async def get_spec_decode_metrics(self) -> dict[str, Any]:
+        """Get speculative decoding metrics from this replica's primary vLLM server.
+
+        Returns:
+            dict[str, Any]: Dictionary containing speculative decoding counters:
+                - replica_rank: This replica's rank
+                - spec_decode_num_accepted_tokens: Number of accepted tokens (counter)
+                - spec_decode_num_draft_tokens: Number of draft tokens (counter)
+                - spec_decode_num_drafts: Number of spec decoding drafts (counter)
+                - spec_decode_num_accepted_tokens_per_pos: Dict mapping position to count
+
+        Note: These are cumulative counters. To get per-rollout metrics, capture before/after
+        and compute the delta.
+        """
+        # Only the first server (node_rank=0) has the metrics endpoint
+        result = await self.servers[0].get_spec_decode_metrics.remote()
         result["replica_rank"] = self.replica_rank
         return result
 
