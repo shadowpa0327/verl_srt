@@ -42,6 +42,10 @@ from verl.utils.rollout_trace import (
 )
 from verl.utils.transferqueue_utils import tqbridge
 from verl.workers.rollout.replica import TokenOutput, get_rollout_replica_class
+from verl.experimental.agent_loop.spec_decode_metrics import (
+    SpecDecodeSnapshot,
+    SpecDecodeRolloutStats,
+)
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
@@ -744,6 +748,9 @@ class AgentLoopManager:
         if self.reward_model_manager:
             self.reward_model_manager.wake_up()
 
+        # Capture spec decode metrics before generation
+        spec_decode_before = self._collect_spec_decode_snapshot()
+
         chunkes = prompts.chunk(len(self.agent_loop_workers))
         outputs = ray.get(
             [
@@ -752,6 +759,11 @@ class AgentLoopManager:
             ]
         )
         output = DataProto.concat(outputs)
+
+        # Capture spec decode metrics after generation and compute delta
+        spec_decode_after = self._collect_spec_decode_snapshot()
+        spec_decode_metrics = self._compute_spec_decode_stats(spec_decode_before, spec_decode_after)
+
         # Fix for Issue #4147: Always call sleep() to ensure proper cleanup
         self.sleep()
         if self.reward_model_manager:
@@ -761,7 +773,7 @@ class AgentLoopManager:
         metrics = [output.meta_info.pop("metrics") for output in outputs]  # List[List[Dict[str, str]]]
         timing = self._performance_metrics(metrics, output)
 
-        output.meta_info = {"timing": timing, **outputs[0].meta_info}
+        output.meta_info = {"timing": timing, "spec_decode_metrics": spec_decode_metrics, **outputs[0].meta_info}
         return output
 
     def _performance_metrics(self, metrics: list[list[dict[str, str]]], output: DataProto) -> dict[str, float]:
@@ -786,12 +798,76 @@ class AgentLoopManager:
 
         return timing
 
+    def _collect_spec_decode_snapshot(self) -> SpecDecodeSnapshot:
+        """Collect speculative decoding metrics snapshot from all replicas.
+
+        Returns:
+            Aggregated SpecDecodeSnapshot across all replicas.
+        """
+        try:
+            # Collect from all replicas in parallel
+            async def collect():
+                results = await asyncio.gather(
+                    *[replica.get_spec_decode_metrics() for replica in self.rollout_replicas],
+                    return_exceptions=True,
+                )
+                return results
+
+            results = asyncio.run(collect())
+
+            # Convert results to snapshots and aggregate
+            snapshots = []
+            for result in results:
+                if isinstance(result, Exception):
+                    logger.debug(f"Failed to collect spec decode metrics: {result}")
+                    continue
+                snapshots.append(SpecDecodeSnapshot.from_prometheus_dict(result))
+
+            if not snapshots:
+                return SpecDecodeSnapshot()
+
+            return SpecDecodeSnapshot.aggregate(snapshots)
+
+        except Exception as e:
+            logger.debug(f"Error collecting spec decode snapshot: {e}")
+            return SpecDecodeSnapshot()
+
+    def _compute_spec_decode_stats(
+        self,
+        before: SpecDecodeSnapshot,
+        after: SpecDecodeSnapshot,
+    ) -> dict[str, float]:
+        """Compute speculative decoding statistics from before/after snapshots.
+
+        Args:
+            before: Snapshot captured before generation.
+            after: Snapshot captured after generation.
+
+        Returns:
+            Dictionary of metrics for wandb logging.
+        """
+        delta = after - before
+
+        if delta.is_empty():
+            # No spec decode activity, return empty metrics
+            return {}
+
+        stats = SpecDecodeRolloutStats.from_delta(delta)
+        return stats.to_metrics_dict()
+
     def _build_secondary_work_items(
         self,
         secondary_prompts: "DataProto",
         secondary_priority: int = 10,
     ) -> list["SecondaryWorkItem"]:
         """Convert DataProto to list of SecondaryWorkItem for runahead.
+
+        Supports two input formats (in priority order):
+        1. batch["input_ids"] + batch["attention_mask"] - pre-tokenized prompts
+        2. non_tensor_batch["raw_prompt"] - will tokenize internally using chat template
+
+        This allows both the benchmark (pre-tokenized) and the trainer (_get_gen_batch output)
+        to use the same runahead API.
 
         Args:
             secondary_prompts: Future batch prompts as DataProto.
@@ -806,31 +882,65 @@ class AgentLoopManager:
 
         work_items: list[SecondaryWorkItem] = []
 
-        secondary_prompt_batch = secondary_prompts.batch.get("input_ids")
-        if secondary_prompt_batch is None:
-            secondary_prompt_batch = secondary_prompts.batch.get("prompts")
-        if secondary_prompt_batch is None:
-            raise KeyError("secondary_prompts.batch must contain 'input_ids' or 'prompts'")
+        # === Try pre-tokenized format first ===
+        secondary_prompt_batch = None
+        secondary_attention_mask = None
+        use_tokenized = False
 
-        secondary_attention_mask = secondary_prompts.batch.get("attention_mask")
+        if secondary_prompts.batch is not None:
+            secondary_prompt_batch = secondary_prompts.batch.get("input_ids")
+            if secondary_prompt_batch is None:
+                secondary_prompt_batch = secondary_prompts.batch.get("prompts")
+            if secondary_prompt_batch is not None:
+                use_tokenized = True
+                secondary_attention_mask = secondary_prompts.batch.get("attention_mask")
+
+        # === Fallback: tokenize raw_prompt ===
+        if not use_tokenized:
+            raw_prompts = secondary_prompts.non_tensor_batch.get("raw_prompt")
+            if raw_prompts is None:
+                raise ValueError(
+                    "secondary_prompts must contain either batch['input_ids'], "
+                    "batch['prompts'], or non_tensor_batch['raw_prompt']"
+                )
+
+            # Tokenize each prompt using chat template
+            prompt_ids_list = []
+            for messages in raw_prompts:
+                token_ids = self.tokenizer.apply_chat_template(
+                    messages, add_generation_prompt=True, tokenize=True
+                )
+                prompt_ids_list.append(token_ids)
+
+            # Store as list (no tensor needed since we iterate per-sample)
+            secondary_prompt_batch = prompt_ids_list
+
+        # === Extract optional metadata ===
         secondary_sampling_params = secondary_prompts.non_tensor_batch.get("sampling_params")
         secondary_max_tokens = secondary_prompts.non_tensor_batch.get("max_tokens")
         secondary_sampling_seeds = secondary_prompts.non_tensor_batch.get("sampling_seed")
 
+        # === Build work items ===
         for i in range(len(secondary_prompts)):
             sample_id = f"secondary_{i}"
-            prompt_ids_tensor = secondary_prompt_batch[i]
 
-            if secondary_attention_mask is not None:
-                mask_tensor = secondary_attention_mask[i]
-                if mask_tensor.shape == prompt_ids_tensor.shape:
-                    prompt_ids = prompt_ids_tensor[mask_tensor.bool()].tolist()
+            # Extract prompt_ids based on format
+            if use_tokenized:
+                prompt_ids_tensor = secondary_prompt_batch[i]
+                if secondary_attention_mask is not None:
+                    mask_tensor = secondary_attention_mask[i]
+                    if mask_tensor.shape == prompt_ids_tensor.shape:
+                        prompt_ids = prompt_ids_tensor[mask_tensor.bool()].tolist()
+                    else:
+                        prompt_ids = prompt_ids_tensor.tolist()
                 else:
-                    prompt_ids = prompt_ids_tensor.tolist()
+                    # Fallback: strip padding zeros
+                    prompt_ids = [t for t in prompt_ids_tensor.tolist() if t != 0]
             else:
-                # Fallback: preserve previous behavior if attention_mask is missing.
-                prompt_ids = [t for t in prompt_ids_tensor.tolist() if t != 0]
+                # Already a list from tokenization
+                prompt_ids = secondary_prompt_batch[i]
 
+            # Build sampling_params
             sampling_params: dict[str, Any] = {}
             if secondary_sampling_params is not None:
                 try:
