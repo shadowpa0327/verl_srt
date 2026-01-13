@@ -16,6 +16,7 @@ set -x
 
 # Allow CUDA visibility in Ray actors that don't request GPUs
 # (needed for vLLM module imports that check CUDA capabilities)
+export VERL_LOGGING_LEVEL=INFO
 export RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO=0
 
 python3 -m recipe.srt.main_ppo \
@@ -25,7 +26,6 @@ python3 -m recipe.srt.main_ppo \
     data.train_batch_size=32 \
     data.max_prompt_length=512 \
     data.max_response_length=1024 \
-    data.train_max_samples=500 \
     data.filter_overlong_prompts=True \
     data.truncation='error' \
     actor_rollout_ref.model.path=Qwen/Qwen2.5-1.5B-Instruct \
@@ -55,7 +55,7 @@ python3 -m recipe.srt.main_ppo \
     trainer.experiment_name='qwen2.5_1.5b_srt' \
     trainer.n_gpus_per_node=1 \
     trainer.nnodes=1 \
-    trainer.save_freq=20 \
+    trainer.save_freq=200 \
     trainer.test_freq=5 \
     trainer.total_epochs=15 \
     +actor_rollout_ref.rollout.enable_srt=true \
