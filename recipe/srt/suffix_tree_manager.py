@@ -292,6 +292,45 @@ class SuffixTreeManager:
         last_non_pad = len(token_ids) - 1 - mask[::-1].argmax()
         return token_ids[: last_non_pad + 1].tolist()
 
+    def add_sequence(
+        self,
+        prompt_tokens: List[int],
+        response_tokens: List[int],
+        req_id: Optional[str] = None,
+    ) -> None:
+        """Add a single prompt/response sequence to the suffix tree.
+
+        This is a lower-level API for adding individual sequences,
+        useful for processing secondary outputs from runahead.
+
+        Args:
+            prompt_tokens: Tokenized prompt (must match vLLM tokenization).
+            response_tokens: Response tokens to add to the tree.
+            req_id: Optional request ID (auto-generated if not provided).
+        """
+        if not self.enabled:
+            return
+
+        if len(prompt_tokens) == 0 or len(response_tokens) == 0:
+            return
+
+        # Generate unique request ID if not provided
+        if req_id is None:
+            self._secondary_counter = getattr(self, "_secondary_counter", 0) + 1
+            req_id = f"secondary_{self._secondary_counter}"
+
+        # Convert to numpy arrays for cache
+        prompt_array = np.array(prompt_tokens, dtype=np.int32)
+        response_array = np.array(response_tokens, dtype=np.int32)
+
+        # Start request (creates or reuses tree based on prompt hash)
+        self._cache.start_request(req_id, prompt_array)
+
+        # Add response tokens to tree
+        self._cache.add_tokens(req_id, response_array)
+
+        # NOTE: We don't call stop_request() - keep trees active for speculation
+
     def get_snapshot(self) -> Tuple[List[Tuple[int, bytes]], Dict[str, int]]:
         """
         Create snapshot of current suffix trees for pushing to workers.
