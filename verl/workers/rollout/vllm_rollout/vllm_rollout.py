@@ -272,3 +272,35 @@ class vLLMAsyncRollout(BaseRollout):
 
     def get_zeromq_address(self):
         return self.address
+
+    def load_suffix_snapshot(
+        self,
+        snapshots: list[tuple[int, bytes]],
+        hash_mapping: dict[str, int],
+    ) -> bool:
+        """Load suffix tree snapshots for speculative decoding.
+
+        Args:
+            snapshots: List of (tree_idx, snapshot_bytes) tuples
+            hash_mapping: Dict mapping prompt_hash -> tree_idx
+
+        Returns:
+            True if loaded successfully, False if drafter not available
+        """
+        if not snapshots:
+            return True
+
+        try:
+            model_runner = self.inference_engine.worker.model_runner
+            if hasattr(model_runner, 'drafter') and hasattr(model_runner.drafter, 'load_snapshot'):
+                model_runner.drafter.load_snapshot(snapshots, hash_mapping)
+                logger.info(
+                    f"Loaded {len(snapshots)} suffix trees with {len(hash_mapping)} hash mappings"
+                )
+                return True
+            else:
+                logger.warning("Drafter not available for suffix snapshot loading")
+                return False
+        except Exception as e:
+            logger.error(f"Failed to load suffix snapshot: {e}")
+            return False
