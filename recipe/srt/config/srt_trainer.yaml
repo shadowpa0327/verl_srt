@@ -1,0 +1,18 @@
+# SRT (Speculative Rollout with Tree-Structured Cache) PPO Trainer Config
+#
+# This config extends the default PPO trainer config with SRT-specific settings.
+# SRT fields are passed via CLI with "+" prefix to avoid schema conflicts.
+#
+# Example CLI usage:
+#   +actor_rollout_ref.rollout.enable_srt=true
+#   +actor_rollout_ref.rollout.srt_max_tree_depth=64
+#   +actor_rollout_ref.rollout.srt_hash_token_count=128
+#   +actor_rollout_ref.rollout.srt_num_speculative_tokens=24
+
+hydra:
+  searchpath:
+    - file://verl/trainer/config
+
+defaults:
+  - ppo_trainer
+  - _self_
