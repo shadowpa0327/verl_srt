@@ -1236,6 +1236,7 @@ class RunaheadCentralRouter:
                         output=output,
                         status="aborted",
                         tokens_generated=tokens_generated,
+                        prompt_ids=work_item.prompt_ids,
                     ))
                     self._batch_metrics.secondary_aborted += 1
                     self.secondary_aborted += 1
@@ -1245,6 +1246,7 @@ class RunaheadCentralRouter:
                         output=output,
                         status="completed",
                         tokens_generated=tokens_generated,
+                        prompt_ids=work_item.prompt_ids,
                     ))
                     self._batch_metrics.secondary_completed += 1
             else:

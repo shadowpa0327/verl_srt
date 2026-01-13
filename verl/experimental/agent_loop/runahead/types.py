@@ -30,12 +30,14 @@ class SecondaryOutput:
         output: Token output if started, None if never started.
         status: Current status of the secondary request.
         tokens_generated: Number of tokens generated (partial if aborted).
+        prompt_ids: Original prompt token IDs (for suffix tree updates).
     """
 
     sample_id: str
     output: Optional[TokenOutput] = None
     status: Literal["completed", "aborted", "rejected", "pending"] = "pending"
     tokens_generated: int = 0
+    prompt_ids: list[int] = field(default_factory=list)
 
 
 @dataclass
