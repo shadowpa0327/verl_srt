@@ -114,3 +114,26 @@ class SuffixDecodingProposer:
     def load_model(self, *args, **kwargs):
         # No model to load.
         pass
+
+    def load_snapshot(
+        self,
+        snapshots: list[tuple[int, bytes]],
+        hash_mapping: dict[str, int],
+    ) -> None:
+        """Load suffix tree snapshots from serialized data.
+
+        Args:
+            snapshots: List of (tree_idx, snapshot_bytes) containing serialized trees.
+            hash_mapping: Dict mapping prompt_hash -> tree_idx for tree lookup.
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        if not snapshots:
+            logger.debug("load_snapshot called with empty snapshots, skipping")
+            return
+
+        self.suffix_cache.load_snapshot(snapshots, hash_to_tree=hash_mapping)
+        logger.info(
+            f"Loaded {len(snapshots)} suffix trees with {len(hash_mapping)} hash mappings"
+        )

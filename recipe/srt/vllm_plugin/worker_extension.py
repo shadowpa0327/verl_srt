@@ -19,12 +19,25 @@ enabling load_suffix_snapshot() to be called via collective_rpc from the server.
 
 Usage in vLLM config:
     worker_extension_cls="recipe.srt.vllm_plugin.worker_extension.SuffixTreeWorkerExtension"
+
+IMPORTANT: When this module is imported, it applies all SRT vLLM patches. This is
+critical because the worker_extension_cls is loaded before GPUModelRunner is created,
+so we can patch GPUModelRunner.__init__ to handle the "suffix" speculative method.
 """
 
 import logging
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# Apply all SRT patches when this module is imported.
+# This ensures GPUModelRunner is patched before it's instantiated.
+try:
+    from recipe.srt.vllm_plugin.patches import apply_all_patches
+    apply_all_patches()
+    logger.info("Applied all SRT vLLM patches from worker_extension module")
+except ImportError as e:
+    logger.warning(f"Failed to apply SRT patches: {e}")
 
 
 class SuffixTreeWorkerExtension:

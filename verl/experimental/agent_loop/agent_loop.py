@@ -656,6 +656,11 @@ class AgentLoopManager:
             self.reward_model_manager = RewardModelManager(config.reward_model, rm_resource_pool)
             self.reward_router_address = self.reward_model_manager.get_router_address()
 
+        # Load tokenizer for secondary work item building (runahead)
+        model_path = config.actor_rollout_ref.model.path
+        local_path = copy_to_local(model_path)
+        self.tokenizer = hf_tokenizer(local_path, trust_remote_code=True)
+
         # for recipe to change
         if not hasattr(self, "rollout_replica_class"):
             self.rollout_replica_class = get_rollout_replica_class(self.config.actor_rollout_ref.rollout.name)
@@ -1025,6 +1030,9 @@ class AgentLoopManager:
         if self.reward_model_manager:
             self.reward_model_manager.wake_up()
 
+        # Capture spec decode metrics before generation
+        spec_decode_before = self._collect_spec_decode_snapshot()
+
         # Configure optional workload polling
         ray.get(
             self.router.configure_workload_polling.remote(
@@ -1110,6 +1118,12 @@ class AgentLoopManager:
             secondary_outputs = []
             metrics = RunaheadMetrics(primary_time_s=primary_time_s)
 
+        # ========== SPEC DECODE METRICS ==========
+
+        # Capture spec decode metrics after generation and compute delta
+        spec_decode_after = self._collect_spec_decode_snapshot()
+        spec_decode_metrics = self._compute_spec_decode_stats(spec_decode_before, spec_decode_after)
+
         # ========== CLEANUP ==========
 
         # Sleep servers
@@ -1125,6 +1139,10 @@ class AgentLoopManager:
         if missing_primary:
             raise RuntimeError(f"Missing primary results for worker indices: {missing_primary}")
         primary_output = DataProto.concat([r for r in primary_results_by_worker if r is not None])
+
+        # Attach spec decode metrics to primary output meta_info
+        if spec_decode_metrics:
+            primary_output.meta_info["spec_decode_metrics"] = spec_decode_metrics
 
         result = RunaheadResult(
             primary_outputs=primary_output,
@@ -1145,6 +1163,38 @@ class AgentLoopManager:
     def clear_kv_cache(self):
         """Clear all rollout kv cache, but don`t sleep."""
         self._run_all([replica.clear_kv_cache() for replica in self.rollout_replicas])
+
+    def load_suffix_snapshot(
+        self,
+        snapshots: list[tuple[int, bytes]],
+        hash_mapping: dict[str, int],
+    ) -> list:
+        """Load suffix tree snapshots to all rollout replicas.
+
+        This forwards the snapshot to each replica's load_suffix_snapshot method
+        if available (requires SRTvLLMReplica or similar).
+
+        Args:
+            snapshots: List of (tree_idx, snapshot_bytes) tuples
+            hash_mapping: Dict mapping prompt_hash -> tree_idx
+
+        Returns:
+            List of results from each replica (or empty if not supported)
+        """
+        if not snapshots:
+            return []
+
+        results = []
+        for replica in self.rollout_replicas:
+            if hasattr(replica, "load_suffix_snapshot"):
+                result = replica.load_suffix_snapshot(snapshots, hash_mapping)
+                results.append(result)
+            else:
+                logger.warning(
+                    f"Replica {replica} does not support load_suffix_snapshot. "
+                    "Use SRTvLLMReplica for suffix tree speculation."
+                )
+        return results
 
     # =========================================================================
     # Metrics Collection
