@@ -9,11 +9,11 @@
 #   pip install -e recipe/srt/srt_plugin
 #
 # USAGE:
-#   Set VERL_SRT_ENABLED=1 to enable suffix decoding at runtime.
-#   Without this environment variable, the plugin does nothing.
+#   Plugin is enabled by default after installation.
+#   All patches have internal guards and are no-ops if method != "suffix".
 #
-# EXAMPLE:
-#   VERL_SRT_ENABLED=1 python my_training_script.py
+# DISABLE:
+#   VERL_SRT_DISABLED=1 python my_training_script.py
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel", "cmake>=3.18", "nanobind>=1.0.0", "ninja"]

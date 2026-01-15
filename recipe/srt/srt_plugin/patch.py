@@ -19,14 +19,14 @@ patches that are applied at runtime to support the "suffix" speculative
 decoding method.
 
 USAGE:
-    Set environment variable VERL_SRT_ENABLED=1 to enable suffix decoding.
-    Without this, the plugin does nothing (safe for normal vLLM usage).
+    The plugin is enabled by default when srt-plugin is installed.
+    Set VERL_SRT_DISABLED=1 to explicitly disable it.
 
 ARCHITECTURE:
     The plugin is registered as a vLLM general plugin via entry_points.
     When vLLM calls load_general_plugins(), this plugin:
 
-    1. Checks VERL_SRT_ENABLED - if not "1", returns immediately (no-op)
+    1. Checks VERL_SRT_DISABLED - if "1", returns immediately (disabled)
     2. Applies config_patches in main process (SpeculativeConfig)
     3. Applies arg_utils_patches in main process (CLI arguments)
     4. Patches WorkerBase.__init__ to apply remaining patches in subprocesses:
@@ -35,6 +35,7 @@ ARCHITECTURE:
        - input_batch_patches (prompt_hashes support)
 
     This ensures all patches are applied in ALL processes (main, EngineCore, Workers).
+    All patches have internal guards and are no-ops if method != "suffix".
 """
 
 import logging
@@ -42,8 +43,8 @@ import os
 
 logger = logging.getLogger(__name__)
 
-# Environment variable to control SRT plugin activation
-SRT_ENABLED_ENV = "VERL_SRT_ENABLED"
+# Environment variable to disable SRT plugin (opt-out)
+SRT_DISABLED_ENV = "VERL_SRT_DISABLED"
 
 # Track if plugin has been applied
 _plugin_applied = False
@@ -92,7 +93,8 @@ def srt_plugin():
     - Worker subprocesses
 
     ACTIVATION:
-        Set VERL_SRT_ENABLED=1 to enable. Without this, the plugin does nothing.
+        Plugin is enabled by default. Set VERL_SRT_DISABLED=1 to disable.
+        All patches have internal guards and are no-ops if method != "suffix".
 
     CONFLICT AVOIDANCE:
         If ARCTIC_INFERENCE_ENABLED=1, this plugin skips to avoid conflicts
@@ -100,10 +102,9 @@ def srt_plugin():
     """
     global _plugin_applied
 
-    # === GUARD: Check if SRT is enabled ===
-    if os.getenv(SRT_ENABLED_ENV) != "1":
-        # SRT not enabled - do nothing
-        # This makes the plugin safe for normal vLLM usage
+    # === GUARD: Check if SRT is explicitly disabled ===
+    if os.getenv(SRT_DISABLED_ENV) == "1":
+        logger.debug("SRT plugin disabled via VERL_SRT_DISABLED=1")
         return
 
     # === GUARD: Already applied ===
@@ -160,6 +161,6 @@ def srt_plugin():
 
     _plugin_applied = True
     logger.info(
-        "SRT vLLM plugin enabled (VERL_SRT_ENABLED=1). "
-        "Suffix decoding patches applied."
+        "SRT vLLM plugin enabled. Suffix decoding patches applied. "
+        "Set VERL_SRT_DISABLED=1 to disable."
     )

@@ -21,11 +21,11 @@ This plugin provides:
 - patching: ArcticPatch framework for clean monkey-patching
 
 Usage:
-    # Register as vLLM plugin (automatic via entry_points)
+    # Install the plugin (registers automatically via entry_points)
     pip install -e recipe/srt/srt_plugin
 
-    # Enable at runtime
-    VERL_SRT_ENABLED=1 python your_script.py
+    # Plugin is enabled by default. To disable:
+    VERL_SRT_DISABLED=1 python your_script.py
 """
 
 from recipe.srt.srt_plugin.patch import srt_plugin
