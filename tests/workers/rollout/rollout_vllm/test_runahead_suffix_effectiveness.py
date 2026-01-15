@@ -465,7 +465,7 @@ class RunaheadSuffixEffectivenessTest:
 
         # Inject worker extension for suffix snapshot loading
         vllm_kwargs.worker_extension_cls = (
-            "recipe.srt.vllm_plugin.worker_extension.SuffixTreeWorkerExtension"
+            "recipe.srt.srt_plugin.worker_extension.SuffixTreeWorkerExtension"
         )
 
         # Configure speculative decoding with suffix method

@@ -189,12 +189,12 @@ class SRTRayPPOTrainer(RayPPOTrainer):
             # Add worker_extension_cls to inject load_suffix_snapshot method into workers
             # This enables collective_rpc calls from the server to load suffix tree snapshots
             vllm_kwargs.worker_extension_cls = (
-                "recipe.srt.vllm_plugin.worker_extension.SuffixTreeWorkerExtension"
+                "recipe.srt.srt_plugin.worker_extension.SuffixTreeWorkerExtension"
             )
 
         print(
             f"SRT: Configured vLLM speculative_config: {speculative_config}, "
-            f"worker_extension_cls: recipe.srt.vllm_plugin.worker_extension.SuffixTreeWorkerExtension"
+            f"worker_extension_cls: recipe.srt.srt_plugin.worker_extension.SuffixTreeWorkerExtension"
         )
 
     def _init_suffix_tree_manager(self) -> SuffixTreeManager:
