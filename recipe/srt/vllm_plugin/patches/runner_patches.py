@@ -45,7 +45,7 @@ def apply_patches():
         return
 
     # Lazy imports to avoid CUDA initialization at module load time
-    from arctic_inference.patching import ArcticPatch
+    from recipe.srt.srt_plugin.patching import ArcticPatch
     from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 
     # Store original methods for wrapping
@@ -75,7 +75,7 @@ def apply_patches():
             spec_config = vllm_config.speculative_config
             is_suffix_method = (
                 spec_config is not None
-                and spec_config.method in ("suffix", "suffix_remote")
+                and spec_config.method == "suffix"
             )
 
             # Get SRT config from registry if available, otherwise create from defaults
@@ -133,14 +133,6 @@ def apply_patches():
                             enable_in_flight_updates=srt_config.enable_in_flight_updates,
                         )
 
-                    elif method == "suffix_remote":
-                        from recipe.srt.vllm_plugin.proposers.suffix_decoding_remote import (
-                            RemoteSuffixDecodingProposer,
-                        )
-
-                        logger.info("Using RemoteSuffixDecodingProposer (gRPC client)")
-                        self.drafter = RemoteSuffixDecodingProposer(vllm_config)
-
                     # Set up rejection sampler (same as other spec decode methods)
                     self.rejection_sampler = RejectionSampler()
 
@@ -168,7 +160,7 @@ def apply_patches():
             # Check suffix method directly from speculative_config
             is_suffix_method = (
                 self.speculative_config is not None
-                and self.speculative_config.method in ("suffix", "suffix_remote")
+                and self.speculative_config.method == "suffix"
             )
 
             # Check if speculative decoding should be disabled due to high batch size
@@ -189,33 +181,18 @@ def apply_patches():
                     batch_size = sampled_token_ids.shape[0]
                     return [[] for _ in range(batch_size)]
 
-            # Handle suffix methods
+            # Handle suffix method
             if is_suffix_method:
-                method = self.speculative_config.method
+                assert isinstance(sampled_token_ids, list)
+                from recipe.srt.vllm_plugin.proposers.suffix_decoding_parallel import (
+                    ParallelSuffixDecodingProposer,
+                )
 
-                if method == "suffix":
-                    assert isinstance(sampled_token_ids, list)
-                    from recipe.srt.vllm_plugin.proposers.suffix_decoding_parallel import (
-                        ParallelSuffixDecodingProposer,
-                    )
-
-                    assert isinstance(self.drafter, ParallelSuffixDecodingProposer)
-                    draft_token_ids = self.drafter.propose(
-                        input_batch=self.input_batch, sampled_token_ids=sampled_token_ids
-                    )
-                    return draft_token_ids
-
-                elif method == "suffix_remote":
-                    assert isinstance(sampled_token_ids, list)
-                    from recipe.srt.vllm_plugin.proposers.suffix_decoding_remote import (
-                        RemoteSuffixDecodingProposer,
-                    )
-
-                    assert isinstance(self.drafter, RemoteSuffixDecodingProposer)
-                    draft_token_ids = self.drafter.propose(
-                        input_batch=self.input_batch, sampled_token_ids=sampled_token_ids
-                    )
-                    return draft_token_ids
+                assert isinstance(self.drafter, ParallelSuffixDecodingProposer)
+                draft_token_ids = self.drafter.propose(
+                    input_batch=self.input_batch, sampled_token_ids=sampled_token_ids
+                )
+                return draft_token_ids
 
             # For other methods, use original implementation
             return _original_propose_draft_token_ids(

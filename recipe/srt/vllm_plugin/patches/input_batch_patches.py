@@ -19,7 +19,7 @@ Adds prompt_hashes field for hash-based tree mapping in suffix decoding.
 
 import logging
 
-from arctic_inference.patching import ArcticPatch
+from recipe.srt.srt_plugin.patching import ArcticPatch
 from vllm.v1.worker.gpu_input_batch import InputBatch
 
 logger = logging.getLogger(__name__)

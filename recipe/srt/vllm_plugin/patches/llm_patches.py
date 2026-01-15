@@ -19,7 +19,7 @@ Adds LLM.load_snapshot() method for loading pre-built suffix trees.
 
 import logging
 
-from arctic_inference.patching import ArcticPatch
+from recipe.srt.srt_plugin.patching import ArcticPatch
 from vllm.entrypoints.llm import LLM
 
 logger = logging.getLogger(__name__)

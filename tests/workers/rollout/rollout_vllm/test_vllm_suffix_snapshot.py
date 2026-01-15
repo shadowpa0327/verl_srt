@@ -70,7 +70,7 @@ class TestSuffixCacheSnapshot:
 
     def test_unit_create_snapshot_empty_cache(self):
         """Test creating snapshot from empty cache."""
-        from arctic_inference.suffix_decoding import ParallelSuffixDecodingCache
+        from recipe.srt.srt_plugin.suffix_cache import ParallelSuffixDecodingCache
 
         cache = ParallelSuffixDecodingCache(max_tree_depth=64)
 
@@ -89,7 +89,7 @@ class TestSuffixCacheSnapshot:
 
     def test_unit_create_and_load_snapshot(self):
         """Test creating and loading a snapshot with data."""
-        from arctic_inference.suffix_decoding import ParallelSuffixDecodingCache
+        from recipe.srt.srt_plugin.suffix_cache import ParallelSuffixDecodingCache
 
         # Create cache and add some data
         cache = ParallelSuffixDecodingCache(max_tree_depth=64, hash_token_count=128)
@@ -137,7 +137,7 @@ class TestSuffixCacheSnapshot:
 
     def test_unit_selective_snapshot(self):
         """Test creating selective snapshot for specific trees."""
-        from arctic_inference.suffix_decoding import ParallelSuffixDecodingCache
+        from recipe.srt.srt_plugin.suffix_cache import ParallelSuffixDecodingCache
 
         cache = ParallelSuffixDecodingCache(max_tree_depth=64, hash_token_count=0)
 
@@ -164,7 +164,7 @@ class TestSuffixCacheSnapshot:
 
     def test_unit_snapshot_with_multiple_sequences(self):
         """Test snapshot with multiple sequences sharing a tree."""
-        from arctic_inference.suffix_decoding import ParallelSuffixDecodingCache
+        from recipe.srt.srt_plugin.suffix_cache import ParallelSuffixDecodingCache
 
         cache = ParallelSuffixDecodingCache(max_tree_depth=64, hash_token_count=128)
 
@@ -209,9 +209,7 @@ class TestProposerSnapshot:
 
     def test_unit_proposer_load_snapshot(self):
         """Test ParallelSuffixDecodingProposer.load_snapshot() method."""
-        pytest.importorskip("arctic_inference")
-
-        from arctic_inference.suffix_decoding import ParallelSuffixDecodingCache
+        from recipe.srt.srt_plugin.suffix_cache import ParallelSuffixDecodingCache
 
         # Create source cache with data
         source_cache = ParallelSuffixDecodingCache(max_tree_depth=64, hash_token_count=128)
@@ -343,7 +341,7 @@ def test_integration_full_server_suffix_loading():
 
         # Create test snapshots
         print("\n[4] Creating test snapshots...")
-        from arctic_inference.suffix_decoding import ParallelSuffixDecodingCache
+        from recipe.srt.srt_plugin.suffix_cache import ParallelSuffixDecodingCache
 
         cache = ParallelSuffixDecodingCache(max_tree_depth=64, hash_token_count=128)
 

@@ -19,7 +19,7 @@ Fixes get_output() to properly call post_step after step_fn.
 
 import logging
 
-from arctic_inference.patching import ArcticPatch
+from recipe.srt.srt_plugin.patching import ArcticPatch
 from vllm.v1.engine.core_client import InprocClient
 
 logger = logging.getLogger(__name__)
