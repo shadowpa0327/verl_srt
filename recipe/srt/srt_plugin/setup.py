@@ -5,14 +5,15 @@
 # Based on ArcticInference build system.
 #
 # USAGE:
-#   # Build in-place (recommended for development)
-#   python setup.py build_ext --inplace
+#   # Single command install (recommended)
+#   pip install -e recipe/srt/srt_plugin
 #
-#   # Or use the build script
-#   ./build_extension.sh
+#   # Or build extension only
+#   cd recipe/srt/srt_plugin && python setup.py build_ext --inplace
 
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -113,23 +114,38 @@ class CMakeBuild(build_ext):
             check=True
         )
 
+        # For editable installs, also copy .so to source directory
+        # This ensures the extension is available when running from source
+        setup_dir = Path(__file__).parent.resolve()
+        suffix_cache_dir = setup_dir / "suffix_cache"
+        if suffix_cache_dir.exists():
+            # Find the built .so file matching current Python version
+            import sysconfig
+            ext_suffix = sysconfig.get_config_var('EXT_SUFFIX')
+            so_name = f"_C{ext_suffix}"
+            so_file = extdir / so_name
+            if so_file.exists():
+                dest = suffix_cache_dir / so_name
+                if so_file != dest:
+                    shutil.copy2(so_file, dest)
+                    print(f"Copied {so_name} to {suffix_cache_dir}")
 
-# Only run setup when called directly (not during pip install)
-if __name__ == "__main__":
-    # Get the directory where setup.py is located
-    setup_dir = Path(__file__).parent.resolve()
 
-    # The C++ extension for suffix cache
-    # Note: Extension name must include the package path for --inplace to work correctly
-    ext_modules = [
-        CMakeExtension(
-            "suffix_cache._C",
-            str(setup_dir / "suffix_cache" / "csrc")
-        ),
-    ]
+# Get the directory where setup.py is located
+setup_dir = Path(__file__).parent.resolve()
 
-    setup(
-        name="srt-plugin-ext",
-        ext_modules=ext_modules,
-        cmdclass={"build_ext": CMakeBuild},
-    )
+# The C++ extension for suffix cache
+# Use simple name "_C" to avoid path issues during editable install
+# The .so gets copied to suffix_cache/ in build_extension()
+ext_modules = [
+    CMakeExtension(
+        "_C",
+        str(setup_dir / "suffix_cache" / "csrc")
+    ),
+]
+
+setup(
+    name="srt-plugin-ext",
+    ext_modules=ext_modules,
+    cmdclass={"build_ext": CMakeBuild},
+)
