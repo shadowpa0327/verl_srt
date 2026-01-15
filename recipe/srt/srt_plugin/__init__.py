@@ -12,20 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-Suffix decoding proposer implementations for vLLM.
+SRT plugin for vLLM - suffix decoding integration.
 
-These are standalone proposer classes that will be dynamically
-injected into vLLM's model runner via patches.
+This plugin provides:
+- suffix_cache: Suffix tree data structures for speculative decoding
+- patches: Runtime patches for vLLM to support suffix methods
+- proposers: Suffix decoding proposer implementations
+- patching: ArcticPatch framework for clean monkey-patching
+
+Usage:
+    # Register as vLLM plugin (automatic via entry_points)
+    pip install -e recipe/srt/srt_plugin
+
+    # Enable at runtime
+    VERL_SRT_ENABLED=1 python your_script.py
 """
 
-from recipe.srt.vllm_plugin.proposers.suffix_decoding_parallel import (
-    ParallelSuffixDecodingProposer,
-)
-from recipe.srt.vllm_plugin.proposers.suffix_decoding_remote import (
-    RemoteSuffixDecodingProposer,
-)
+from recipe.srt.srt_plugin.patch import srt_plugin
 
-__all__ = [
-    "ParallelSuffixDecodingProposer",
-    "RemoteSuffixDecodingProposer",
-]
+__all__ = ["srt_plugin"]

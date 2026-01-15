@@ -131,7 +131,6 @@ class SRTRayPPOTrainer(RayPPOTrainer):
             "srt_max_tree_depth": rollout_config.get("srt_max_tree_depth", 64),
             "srt_hash_token_count": rollout_config.get("srt_hash_token_count", 128),
             "srt_num_speculative_tokens": rollout_config.get("srt_num_speculative_tokens", 24),
-            "srt_use_parallel_proposer": rollout_config.get("srt_use_parallel_proposer", True),
         }
 
         # Remove SRT fields from rollout_config to avoid RolloutConfig schema errors
@@ -140,7 +139,6 @@ class SRTRayPPOTrainer(RayPPOTrainer):
             "srt_max_tree_depth",
             "srt_hash_token_count",
             "srt_num_speculative_tokens",
-            "srt_use_parallel_proposer",
         ]
         with open_dict(config):
             for field in srt_fields:
@@ -153,7 +151,6 @@ class SRTRayPPOTrainer(RayPPOTrainer):
         # Get SRT config values
         max_tree_depth = self._srt_config["srt_max_tree_depth"]
         num_speculative_tokens = self._srt_config["srt_num_speculative_tokens"]
-        use_parallel = self._srt_config["srt_use_parallel_proposer"]
 
         # Use open_dict to allow adding new keys to the config
         with open_dict(config):
@@ -169,13 +166,16 @@ class SRTRayPPOTrainer(RayPPOTrainer):
                 vllm_kwargs = engine_kwargs.vllm
 
             # Use vLLM's --speculative-config JSON argument format
-            # This is the standard way to configure speculative decoding in vLLM
-            # Our config_patches.py extends SpeculativeConfig to accept suffix fields
+            # SRT params use srt_ prefix and are extracted by arg_utils_patches
+            # before SpeculativeConfig validation. See config.py:SRTSuffixConfig
             speculative_config = {
                 "method": "suffix",
                 "num_speculative_tokens": num_speculative_tokens,
-                "suffix_decoding_max_tree_depth": max_tree_depth,
-                "suffix_decoding_use_parallel": use_parallel,
+                # SRT-specific params (extracted by SRTSuffixConfig.extract_from_dict)
+                "srt_max_tree_depth": max_tree_depth,
+                "srt_max_spec_factor": 1.0,
+                "srt_min_token_prob": 0.1,
+                "srt_enable_in_flight_updates": True,
             }
 
             # Merge with existing speculative_config if present

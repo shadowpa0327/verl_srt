@@ -6,7 +6,7 @@
 """
 Parallel suffix decoding proposer implementation.
 
-This proposer uses ParallelSuffixDecodingCache from arctic_inference for
+This proposer uses ParallelSuffixDecodingCache from srt_plugin.suffix_cache for
 batch-parallel speculative decoding with hash-based tree mapping.
 """
 
@@ -71,7 +71,7 @@ class ParallelSuffixDecodingProposer:
         self.max_model_len = max_model_len
 
         # Lazy import to avoid error when Suffix Decoding is not used.
-        from arctic_inference.suffix_decoding import ParallelSuffixDecodingCache
+        from recipe.srt.srt_plugin.suffix_cache import ParallelSuffixDecodingCache
 
         # Initialize parallel cache with batched speculation support
         self.suffix_cache = ParallelSuffixDecodingCache(

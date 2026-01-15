@@ -6,7 +6,7 @@
 """
 Sequential suffix decoding proposer implementation.
 
-This proposer uses SuffixDecodingCache from arctic_inference for
+This proposer uses SuffixDecodingCache from srt_plugin.suffix_cache for
 speculative decoding based on suffix tree pattern matching.
 """
 
@@ -55,7 +55,7 @@ class SuffixDecodingProposer:
         self.max_model_len = max_model_len
 
         # Lazy import to avoid error when Suffix Decoding is not used.
-        from arctic_inference.suffix_decoding import SuffixDecodingCache
+        from recipe.srt.srt_plugin.suffix_cache import SuffixDecodingCache
 
         # Initialize and empty cache. This object will take care of caching request
         # outputs, evicting old requests, and manages the per-prompt suffix trees.

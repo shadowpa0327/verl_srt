@@ -21,7 +21,7 @@ installed before vLLM creates any subprocesses.
 
 from omegaconf import DictConfig
 
-from recipe.srt.vllm_plugin.patch import srt_plugin
+from recipe.srt.srt_plugin.patch import srt_plugin
 from verl.workers.fsdp_workers import ActorRolloutRefWorker, AsyncActorRolloutRefWorker
 
 

@@ -1,0 +1,47 @@
+# SRT Plugin for vLLM
+#
+# This package includes:
+# - Suffix cache with C++ extension for high-performance suffix tree operations
+# - vLLM patches for suffix decoding speculative generation
+# - Proposer implementations for suffix-based speculation
+#
+# INSTALLATION:
+#   pip install -e recipe/srt/srt_plugin
+#
+# USAGE:
+#   Set VERL_SRT_ENABLED=1 to enable suffix decoding at runtime.
+#   Without this environment variable, the plugin does nothing.
+#
+# EXAMPLE:
+#   VERL_SRT_ENABLED=1 python my_training_script.py
+#
+# NOTE: C++ extension (_C.so) must be pre-built or copied from ArcticInference.
+# To rebuild from source, use: python setup.py build_ext --inplace
+# Requires: cmake>=3.18, nanobind>=1.0.0, ninja, torch
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "srt-plugin"
+version = "0.3.0"
+description = "SRT suffix decoding plugin for vLLM with C++ acceleration"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+]
+
+[project.entry-points."vllm.general_plugins"]
+srt_suffix_decoding = "recipe.srt.srt_plugin.patch:srt_plugin"
+
+[tool.setuptools]
+# Include the pre-built C++ extension
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["../../.."]
+include = ["recipe.srt.srt_plugin*"]
+
+[tool.setuptools.package-data]
+"recipe.srt.srt_plugin.suffix_cache" = ["*.so"]

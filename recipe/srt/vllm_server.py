@@ -39,18 +39,28 @@ _srt_patches_applied = False
 
 
 def _apply_srt_patches():
-    """Apply SRT patches for suffix decoding support."""
+    """Apply SRT patches for suffix decoding support.
+
+    Applies both config_patches (to add 'suffix' to method Literal) and
+    arg_utils_patches (to extract srt_* params and register SRTSuffixConfig).
+    """
     global _srt_patches_applied
     if _srt_patches_applied:
         return
 
     try:
-        from recipe.srt.vllm_plugin.patches import config_patches
+        # Config patches: Add 'suffix' to SpeculativeConfig.method Literal
+        from recipe.srt.srt_plugin.patches import config_patches
         config_patches.apply_patches()
-        logger.info("Applied SRT config patches in vLLMHttpServer")
+
+        # Arg utils patches: Extract srt_* params and register SRTSuffixConfig
+        from recipe.srt.srt_plugin.patches import arg_utils_patches
+        arg_utils_patches.apply_patches()
+
+        logger.info("Applied SRT config and arg_utils patches in vLLMHttpServer")
         _srt_patches_applied = True
     except ImportError as e:
-        logger.warning(f"Failed to import SRT config patches: {e}")
+        logger.warning(f"Failed to import SRT patches: {e}")
 
 
 @ray.remote(num_cpus=1)

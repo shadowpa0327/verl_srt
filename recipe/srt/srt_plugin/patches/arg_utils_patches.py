@@ -58,7 +58,7 @@ def apply_patches():
         and registered via SRTSuffixConfig. Only vLLM-standard keys are passed
         to SpeculativeConfig validation.
         """
-        from recipe.srt.vllm_plugin.config import SRTSuffixConfig
+        from recipe.srt.srt_plugin.config import SRTSuffixConfig
 
         if self.speculative_config:
             # Extract SRT params and register
@@ -70,8 +70,8 @@ def apply_patches():
             if srt_config.enabled:
                 logger.info(
                     f"Registered SRTSuffixConfig: method={srt_config.method}, "
-                    f"max_tree_depth={srt_config.max_tree_depth}, "
-                    f"use_parallel={srt_config.use_parallel}"
+                    f"num_speculative_tokens={srt_config.num_speculative_tokens}, "
+                    f"max_tree_depth={srt_config.max_tree_depth}"
                 )
 
             # Replace with filtered dict for SpeculativeConfig validation

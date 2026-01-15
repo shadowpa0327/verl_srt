@@ -15,7 +15,7 @@
 Suffix Tree Manager for VERL Training.
 
 This module provides the SuffixTreeManager class that manages suffix tree
-accumulation during RL training. It wraps ArcticInference's ParallelSuffixDecodingCache
+accumulation during RL training. It wraps srt_plugin's ParallelSuffixDecodingCache
 and provides methods to:
 - Update trees from rollout batches
 - Create snapshots for pushing to vLLM workers
@@ -101,7 +101,7 @@ class SuffixTreeManager:
     def _initialize_cache(self) -> None:
         """Initialize the ParallelSuffixDecodingCache."""
         try:
-            from arctic_inference.suffix_decoding import ParallelSuffixDecodingCache
+            from recipe.srt.srt_plugin.suffix_cache import ParallelSuffixDecodingCache
 
             self._cache = ParallelSuffixDecodingCache(
                 max_tree_depth=self.config.max_tree_depth,
@@ -115,7 +115,7 @@ class SuffixTreeManager:
             )
         except ImportError as e:
             logger.warning(
-                f"Failed to import arctic_inference, suffix tree management disabled: {e}"
+                f"Failed to import srt_plugin.suffix_cache, suffix tree management disabled: {e}"
             )
             self._cache = None
 

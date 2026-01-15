@@ -56,11 +56,11 @@ def _apply_main_process_patches():
     They configure SpeculativeConfig and CLI arguments.
     """
     # Config patches: Add "suffix"/"suffix_remote" methods to SpeculativeConfig
-    from recipe.srt.vllm_plugin.patches import config_patches
+    from recipe.srt.srt_plugin.patches import config_patches
     config_patches.apply_patches()
 
     # Arg utils patches: Add suffix decoding CLI arguments
-    from recipe.srt.vllm_plugin.patches import arg_utils_patches
+    from recipe.srt.srt_plugin.patches import arg_utils_patches
     arg_utils_patches.apply_patches()
 
 
@@ -71,15 +71,15 @@ def _apply_worker_process_patches():
     They configure GPUModelRunner and InputBatch for suffix decoding.
     """
     # Config patches: Re-apply in subprocess (doesn't propagate from main)
-    from recipe.srt.vllm_plugin.patches import config_patches
+    from recipe.srt.srt_plugin.patches import config_patches
     config_patches.apply_patches()
 
     # Runner patches: GPUModelRunner suffix proposer integration
-    from recipe.srt.vllm_plugin.patches import runner_patches
+    from recipe.srt.srt_plugin.patches import runner_patches
     runner_patches.apply_patches()
 
     # Input batch patches: prompt_hashes support
-    from recipe.srt.vllm_plugin.patches import input_batch_patches
+    from recipe.srt.srt_plugin.patches import input_batch_patches
     input_batch_patches.apply_patches()
 
 

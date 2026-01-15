@@ -91,6 +91,9 @@ class TestConfig:
     # Runahead settings
     load_threshold: int = 32
 
+    # Suffix decoding settings
+    enable_in_flight_updates: bool = True  # Whether to add tokens to suffix tree during speculation
+
     # Reproducibility
     seed: int = 42
     dataset_cache_dir: Optional[str] = None
@@ -328,10 +331,22 @@ def prepare_three_batches(
 
 @dataclass
 class SpeculationMetrics:
-    """Metrics for speculation quality measurement."""
-    draft_acceptance_rate: float = 0.0
-    num_accepted_tokens: int = 0
+    """Metrics for speculation quality measurement.
+
+    These are DELTA metrics computed per-tick (not accumulated).
+    """
+    # Core speculation metrics (per-tick delta)
+    num_drafts: int = 0
     num_draft_tokens: int = 0
+    num_accepted_tokens: int = 0
+    acceptance_rate: float = 0.0
+    mean_accepted_length: float = 0.0
+    tokens_per_step: float = 0.0
+
+    # Per-position acceptance rates (shows quality at each draft position)
+    per_position_rates: dict = field(default_factory=dict)
+
+    # Timing
     generation_time_s: float = 0.0
     tokens_generated: int = 0
     throughput_tokens_per_s: float = 0.0
@@ -348,7 +363,11 @@ class TestResult:
 
 
 def extract_spec_metrics(gen_output: DataProto, elapsed_time: float) -> SpeculationMetrics:
-    """Extract speculation metrics from generation output."""
+    """Extract speculation metrics from generation output.
+
+    The spec_decode_metrics in meta_info are DELTA metrics computed by
+    AgentLoopManager (before/after snapshot subtraction), not accumulated values.
+    """
     spec_metrics = gen_output.meta_info.get("spec_decode_metrics", {})
 
     # Count total tokens from response_mask
@@ -357,10 +376,23 @@ def extract_spec_metrics(gen_output: DataProto, elapsed_time: float) -> Speculat
         for i in range(len(gen_output)):
             total_tokens += gen_output.batch["response_mask"][i].sum().item()
 
+    # Extract per-position acceptance rates
+    per_position_rates = {}
+    for key, value in spec_metrics.items():
+        if key.startswith("spec_decode/acceptance_rate_pos_"):
+            pos = int(key.split("_")[-1])
+            per_position_rates[pos] = value
+
     return SpeculationMetrics(
-        draft_acceptance_rate=spec_metrics.get("spec_decode/acceptance_rate", 0.0),
-        num_accepted_tokens=int(spec_metrics.get("spec_decode/num_accepted_tokens", 0)),
+        # Core metrics (per-tick delta)
+        num_drafts=int(spec_metrics.get("spec_decode/num_drafts", 0)),
         num_draft_tokens=int(spec_metrics.get("spec_decode/num_draft_tokens", 0)),
+        num_accepted_tokens=int(spec_metrics.get("spec_decode/num_accepted_tokens", 0)),
+        acceptance_rate=spec_metrics.get("spec_decode/acceptance_rate", 0.0),
+        mean_accepted_length=spec_metrics.get("spec_decode/mean_accepted_length", 0.0),
+        tokens_per_step=spec_metrics.get("spec_decode/tokens_per_step", 0.0),
+        per_position_rates=per_position_rates,
+        # Timing
         generation_time_s=elapsed_time,
         tokens_generated=total_tokens,
         throughput_tokens_per_s=total_tokens / elapsed_time if elapsed_time > 0 else 0,
@@ -443,6 +475,7 @@ class RunaheadSuffixEffectivenessTest:
             "num_speculative_tokens": 8,  # Required by vLLM
             "suffix_decoding_max_tree_depth": 64,
             "suffix_decoding_use_parallel": True,  # Use parallel proposer for better hash matching
+            "suffix_decoding_enable_in_flight_updates": self.config.enable_in_flight_updates,
         }
 
         # Re-enable struct mode
@@ -531,7 +564,10 @@ class RunaheadSuffixEffectivenessTest:
                 "secondary_outputs_count": len(result.secondary_outputs),
                 "secondary_completed": result.metrics.secondary_completed,
                 "secondary_aborted": result.metrics.secondary_aborted,
+                "secondary_rejected": result.metrics.secondary_rejected,
+                "secondary_started": result.metrics.secondary_started,
                 "secondary_tokens_added": secondary_tokens_added,
+                "primary_time_s": result.metrics.primary_time_s,
             }
         )
 
@@ -611,9 +647,7 @@ class RunaheadSuffixEffectivenessTest:
         print("-"*40)
         baseline_result = self.run_baseline(b2)
         self.results.append(baseline_result)
-        print(f"    Generation time: {baseline_result.metrics.generation_time_s:.2f}s")
-        print(f"    Tokens generated: {baseline_result.metrics.tokens_generated}")
-        print(f"    Throughput: {baseline_result.metrics.throughput_tokens_per_s:.1f} tok/s")
+        self._print_tick_metrics("baseline", baseline_result)
 
         # Run tick 1: populates cache with b2 patterns
         print("\n" + "-"*40)
@@ -621,9 +655,13 @@ class RunaheadSuffixEffectivenessTest:
         print("-"*40)
         tick1_result = self.run_tick1(b1, b2)
         self.results.append(tick1_result)
-        print(f"    Generation time: {tick1_result.metrics.generation_time_s:.2f}s")
+        self._print_tick_metrics("tick1", tick1_result)
+        print(f"    --- Runahead Stats ---")
+        print(f"    Primary time: {tick1_result.suffix_cache_stats.get('primary_time_s', 0):.2f}s")
+        print(f"    Secondary started: {tick1_result.suffix_cache_stats.get('secondary_started', 0)}")
         print(f"    Secondary completed: {tick1_result.suffix_cache_stats.get('secondary_completed', 0)}")
         print(f"    Secondary aborted: {tick1_result.suffix_cache_stats.get('secondary_aborted', 0)}")
+        print(f"    Secondary rejected: {tick1_result.suffix_cache_stats.get('secondary_rejected', 0)}")
         print(f"    Secondary tokens added to cache: {tick1_result.suffix_cache_stats.get('secondary_tokens_added', 0)}")
 
         # Run tick 2: b2 should benefit from cache
@@ -632,10 +670,7 @@ class RunaheadSuffixEffectivenessTest:
         print("-"*40)
         tick2_result = self.run_tick2(b2, b3)
         self.results.append(tick2_result)
-        print(f"    Generation time: {tick2_result.metrics.generation_time_s:.2f}s")
-        print(f"    Tokens generated: {tick2_result.metrics.tokens_generated}")
-        print(f"    Throughput: {tick2_result.metrics.throughput_tokens_per_s:.1f} tok/s")
-        print(f"    Draft acceptance rate: {tick2_result.metrics.draft_acceptance_rate:.2%}")
+        self._print_tick_metrics("tick2", tick2_result)
 
         # Compute improvement
         improvement = self._compute_improvement(baseline_result, tick2_result)
@@ -646,14 +681,51 @@ class RunaheadSuffixEffectivenessTest:
             "improvement": improvement,
         }
 
+    def _print_tick_metrics(self, tick_name: str, result: TestResult):
+        """Print detailed per-tick speculation metrics."""
+        m = result.metrics
+        print(f"    [DELTA METRICS for {tick_name}]")
+        print(f"    Generation time: {m.generation_time_s:.2f}s")
+        print(f"    Tokens generated: {m.tokens_generated}")
+        print(f"    Throughput: {m.throughput_tokens_per_s:.1f} tok/s")
+
+        if m.num_drafts > 0:
+            print(f"    --- Speculation (this tick only) ---")
+            print(f"    Num drafts: {m.num_drafts}")
+            print(f"    Draft tokens: {m.num_draft_tokens}")
+            print(f"    Accepted tokens: {m.num_accepted_tokens}")
+            print(f"    Acceptance rate: {m.acceptance_rate:.2%}")
+            print(f"    Mean accepted length: {m.mean_accepted_length:.2f}")
+            print(f"    Tokens per step: {m.tokens_per_step:.2f}")
+
+            if m.per_position_rates:
+                pos_str = ", ".join(
+                    f"pos{p}={r:.1%}"
+                    for p, r in sorted(m.per_position_rates.items())[:5]
+                )
+                print(f"    Per-position rates: {pos_str}")
+        else:
+            print(f"    --- No speculation activity ---")
+
     def _compute_improvement(self, baseline: TestResult, tick2: TestResult) -> dict:
         """Compute improvement metrics."""
         return {
-            "acceptance_rate_baseline": baseline.metrics.draft_acceptance_rate,
-            "acceptance_rate_with_cache": tick2.metrics.draft_acceptance_rate,
+            # Acceptance rate comparison
+            "acceptance_rate_baseline": baseline.metrics.acceptance_rate,
+            "acceptance_rate_with_cache": tick2.metrics.acceptance_rate,
             "acceptance_rate_improvement": (
-                tick2.metrics.draft_acceptance_rate - baseline.metrics.draft_acceptance_rate
+                tick2.metrics.acceptance_rate - baseline.metrics.acceptance_rate
             ),
+            # Mean accepted length comparison
+            "mean_accepted_length_baseline": baseline.metrics.mean_accepted_length,
+            "mean_accepted_length_with_cache": tick2.metrics.mean_accepted_length,
+            "mean_accepted_length_improvement": (
+                tick2.metrics.mean_accepted_length - baseline.metrics.mean_accepted_length
+            ),
+            # Tokens per step comparison
+            "tokens_per_step_baseline": baseline.metrics.tokens_per_step,
+            "tokens_per_step_with_cache": tick2.metrics.tokens_per_step,
+            # Throughput comparison
             "throughput_baseline": baseline.metrics.throughput_tokens_per_s,
             "throughput_with_cache": tick2.metrics.throughput_tokens_per_s,
             "throughput_improvement_pct": (
@@ -661,6 +733,13 @@ class RunaheadSuffixEffectivenessTest:
                 / baseline.metrics.throughput_tokens_per_s * 100
                 if baseline.metrics.throughput_tokens_per_s > 0 else 0
             ),
+            # Raw counts for verification
+            "num_drafts_baseline": baseline.metrics.num_drafts,
+            "num_drafts_with_cache": tick2.metrics.num_drafts,
+            "num_draft_tokens_baseline": baseline.metrics.num_draft_tokens,
+            "num_draft_tokens_with_cache": tick2.metrics.num_draft_tokens,
+            "num_accepted_tokens_baseline": baseline.metrics.num_accepted_tokens,
+            "num_accepted_tokens_with_cache": tick2.metrics.num_accepted_tokens,
         }
 
 
@@ -684,6 +763,9 @@ def main():
                         help="max_tokens for long requests (creates bubbles)")
     parser.add_argument("--load-threshold", type=int, default=32,
                         help="Runahead admission threshold")
+    parser.add_argument("--enable-in-flight-updates", type=str, default="true",
+                        choices=["true", "false"],
+                        help="Whether to add tokens to suffix tree during speculation (default: true)")
     parser.add_argument("--num-gpus", type=int, default=1)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output", type=str, default="runahead_suffix_test_results.json")
@@ -697,6 +779,7 @@ def main():
         short_max_tokens=args.short_max_tokens,
         long_max_tokens=args.long_max_tokens,
         load_threshold=args.load_threshold,
+        enable_in_flight_updates=args.enable_in_flight_updates.lower() == "true",
         seed=args.seed,
     )
 
@@ -710,6 +793,7 @@ def main():
     print(f"  Short tokens:    {config.short_max_tokens}")
     print(f"  Long tokens:     {config.long_max_tokens}")
     print(f"  Load threshold:  {config.load_threshold}")
+    print(f"  In-flight updates: {config.enable_in_flight_updates}")
 
     test = RunaheadSuffixEffectivenessTest(config)
     results = test.run_test()

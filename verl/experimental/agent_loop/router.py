@@ -1157,7 +1157,9 @@ class RunaheadCentralRouter:
                     self._secondary_reservation_by_sample_id[work_item.sample_id] = server_idx
                     admitted_counts[server_idx] = admitted_counts.get(server_idx, 0) + 1
 
-                    server_request_id = uuid4().hex
+                    # Use a marker prefix so the proposer can identify secondary requests
+                    # and skip speculative decoding for them (to isolate primary metrics)
+                    server_request_id = f"runahead_{uuid4().hex}"
 
                     # Start task
                     task = asyncio.create_task(

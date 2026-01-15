@@ -11,21 +11,16 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""
-Suffix decoding proposer implementations for vLLM.
+"""Utilities for vLLM suffix decoding patches."""
 
-These are standalone proposer classes that will be dynamically
-injected into vLLM's model runner via patches.
-"""
+import importlib.util
 
-from recipe.srt.vllm_plugin.proposers.suffix_decoding_parallel import (
-    ParallelSuffixDecodingProposer,
-)
-from recipe.srt.vllm_plugin.proposers.suffix_decoding_remote import (
-    RemoteSuffixDecodingProposer,
-)
 
-__all__ = [
-    "ParallelSuffixDecodingProposer",
-    "RemoteSuffixDecodingProposer",
-]
+def _has_module(module_name: str) -> bool:
+    """Check if a module is available."""
+    return importlib.util.find_spec(module_name) is not None
+
+
+def has_arctic_inference() -> bool:
+    """Check optional arctic_inference package availability."""
+    return _has_module("arctic_inference")
