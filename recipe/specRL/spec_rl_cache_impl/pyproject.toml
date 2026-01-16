@@ -1,0 +1,66 @@
+[build-system]
+requires = [
+    "setuptools>=45",
+    "wheel",
+    "cmake>=3.14,<4.0",
+    "pybind11>=2.10.0",
+    "ninja",
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "specrl"
+version = "0.1.0"
+description = "Speculative Decoding RL - Cache management with suffix tree support"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+authors = [
+    {name = "jingkai.he@bytedance.com"}
+]
+requires-python = ">=3.8"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: C++",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+keywords = ["speculative decoding", "reinforcement learning", "cache", "suffix tree"]
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov",
+    "black",
+    "isort",
+    "mypy",
+]
+
+[project.urls]
+Homepage = "https://github.com/He-Jingkai/specRL"
+Documentation = "https://github.com/He-Jingkai/specRL#readme"
+Repository = "https://github.com/He-Jingkai/specRL"
+Issues = "https://github.com/He-Jingkai/specRL/issues"
+
+[tool.setuptools]
+packages = ["specrl", "specrl.cache_updater", "specrl.suffix_cache"]
+
+[tool.setuptools.package-dir]
+specrl = "specrl"
+
+[tool.black]
+line-length = 100
+target-version = ['py38', 'py39', 'py310', 'py311']
+
+[tool.isort]
+profile = "black"
+line_length = 100

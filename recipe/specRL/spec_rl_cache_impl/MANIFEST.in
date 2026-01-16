@@ -1,0 +1,28 @@
+# Include C++ source files
+recursive-include specrl/cache_updater *.cc *.h
+recursive-include specrl/suffix_cache *.cc *.h
+
+# Include shared proto files
+recursive-include specrl/proto *.proto *.cc *.h
+
+# Include CMake files
+include specrl/proto/CMakeLists.txt
+include specrl/cache_updater/CMakeLists.txt
+include specrl/suffix_cache/CMakeLists.txt
+
+# Include Python package files
+include specrl/__init__.py
+
+# Include documentation
+include README.md
+include LICENSE
+
+# Exclude build artifacts
+global-exclude *.so
+global-exclude *.o
+global-exclude *.a
+global-exclude __pycache__
+global-exclude *.pyc
+global-exclude *.pyo
+global-exclude .git*
+global-exclude *.egg-info
