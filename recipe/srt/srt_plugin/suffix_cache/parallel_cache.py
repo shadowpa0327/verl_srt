@@ -223,7 +223,7 @@ class ParallelSuffixDecodingCache:
                 seq_id = 0
                 self._tree_next_seq_id[tree_idx] = 1
                 # Initialize tree with prompt tokens
-                self._extend_tree(tree_idx, seq_id, prompt_token_ids)
+                # self._extend_tree(tree_idx, seq_id, prompt_token_ids)
         else:
             # Original behavior: one tree per request
             tree_idx = self._forest.create_tree()

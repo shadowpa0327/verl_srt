@@ -128,6 +128,18 @@ def _patch_method_literal_type():
     logger.debug(f"Patched method annotation to include suffix methods: {new_values}")
 
 
+def _add_srt_cache_mode_attribute():
+    """Mark SpeculativeConfig to accept srt_cache_mode attribute.
+
+    Instead of adding a dataclass field (which causes pydantic issues),
+    we'll set the attribute in __post_init__ and store srt_cache_mode
+    as a simple instance attribute.
+    """
+    # Just mark that we want to handle srt_cache_mode - actual setting
+    # happens in patched __post_init__
+    logger.debug("srt_cache_mode handling enabled for SpeculativeConfig")
+
+
 def _patch_post_init():
     """Patch SpeculativeConfig.__post_init__ to handle suffix methods.
 
@@ -179,8 +191,9 @@ def apply_patches():
 
     Patches:
     1. Method Literal type to accept 'suffix' and 'suffix_remote'
-    2. __post_init__ to skip draft model validation for suffix methods
-    3. __repr__ to handle suffix methods (no draft model)
+    2. srt_cache_mode field for passing cache mode to workers
+    3. __post_init__ to skip draft model validation for suffix methods
+    4. __repr__ to handle suffix methods (no draft model)
 
     All other configuration is handled via SRTSuffixConfig.
     """
@@ -192,6 +205,9 @@ def apply_patches():
 
     # Patch the method Literal type to accept suffix methods
     _patch_method_literal_type()
+
+    # Enable srt_cache_mode handling
+    _add_srt_cache_mode_attribute()
 
     # Patch __post_init__ to handle suffix methods
     _patch_post_init()

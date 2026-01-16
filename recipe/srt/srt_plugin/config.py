@@ -42,6 +42,9 @@ class SRTSuffixConfig:
     max_spec_factor: float = 1.0
     min_token_prob: float = 0.1
     enable_in_flight_updates: bool = True
+    # Cache mode: "snapshot" for snapshot-based loading, "shared_memory" for
+    # zero-copy shared memory access via SpecRL's SuffixCache
+    cache_mode: str = "snapshot"
 
     # Prefix for keys in speculative_config dict
     KEY_PREFIX = "srt_"
@@ -83,6 +86,9 @@ class SRTSuffixConfig:
                 )
             srt_params["method"] = method
             srt_config = cls(enabled=True, **srt_params)
+
+            # Note: srt_cache_mode is handled separately in arg_utils_patches
+            # since SpeculativeConfig doesn't have this field as a dataclass field
         else:
             srt_config = cls(enabled=False)
 

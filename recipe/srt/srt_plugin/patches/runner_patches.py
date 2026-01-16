@@ -17,14 +17,20 @@ GPUModelRunner patches for suffix proposer integration.
 Patches:
 - Drafter initialization in __init__ for suffix methods
 - Proposal dispatch logic for suffix methods
+- Request lifecycle management for shared memory mode (execute_model hooks)
 
 This module reads configuration from SRTSuffixConfig.get() which is populated
 by arg_utils_patches during engine initialization.
+
+Supports two cache modes:
+- "snapshot": Uses ParallelSuffixDecodingProposer with snapshot-based loading
+- "shared_memory": Uses SharedMemorySuffixDecodingProposer with SpecRL's SuffixCache
 
 Note: Imports are lazy to avoid triggering CUDA initialization at module load time.
 """
 
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -51,12 +57,19 @@ def apply_patches():
     # Store original methods for wrapping
     _original_init = GPUModelRunner.__init__
     _original_propose_draft_token_ids = GPUModelRunner.propose_draft_token_ids
+    _original_execute_model = GPUModelRunner.execute_model
 
     class GPUModelRunnerSuffixPatch(ArcticPatch[GPUModelRunner]):
         """
         Patches GPUModelRunner for suffix decoding support.
 
+        Supports both snapshot mode and shared memory mode:
+        - Snapshot mode: Uses ParallelSuffixDecodingProposer with load_snapshot()
+        - Shared memory mode: Uses SharedMemorySuffixDecodingProposer with
+          execute_model() lifecycle hooks for fetch/evict
+
         - Extends __init__ to initialize suffix proposers
+        - Extends execute_model to handle shared memory lifecycle
         - Extends propose_draft_token_ids to handle suffix methods
         """
 
@@ -66,6 +79,8 @@ def apply_patches():
             Detects suffix method from vllm_config.speculative_config.method.
             Uses SRTSuffixConfig from registry if available, otherwise uses defaults.
             """
+            from concurrent.futures import ThreadPoolExecutor
+
             from vllm.distributed.parallel_state import get_pp_group
             from vllm.v1.sample.rejection_sampler import RejectionSampler
 
@@ -93,6 +108,26 @@ def apply_patches():
                     srt_config,
                 )
 
+            # Detect cache mode from (in order of priority):
+            # 1. Environment variable (for testing/override)
+            # 2. SpeculativeConfig.srt_cache_mode (passed from server)
+            # 3. SRTSuffixConfig.cache_mode (registered in server process)
+            # 4. Default to "snapshot"
+            cache_mode = os.environ.get("SRT_CACHE_MODE", "").lower()
+            if not cache_mode and spec_config and hasattr(spec_config, "srt_cache_mode"):
+                cache_mode = spec_config.srt_cache_mode or ""
+            if not cache_mode and srt_config:
+                cache_mode = srt_config.cache_mode
+            if not cache_mode:
+                cache_mode = "snapshot"
+            cache_mode = cache_mode.lower()
+
+            # Store cache mode for later use
+            self._srt_cache_mode = cache_mode
+            self._suffix_cache = None
+            self._cache_updater = None
+            self._fetch_future = None
+
             if srt_config and srt_config.enabled:
                 # Save the original speculative_config
                 saved_spec_config = vllm_config.speculative_config
@@ -115,23 +150,56 @@ def apply_patches():
                     method = srt_config.method
 
                     if method == "suffix":
-                        from recipe.srt.srt_plugin.proposers.suffix_decoding_parallel import (
-                            ParallelSuffixDecodingProposer,
-                        )
+                        if cache_mode == "shared_memory":
+                            # Shared memory mode: Initialize ThreadPoolExecutor and proposer
+                            # SuffixCache is initialized lazily because the cache server
+                            # may not be running yet when the worker starts
+                            try:
+                                self._cache_updater = ThreadPoolExecutor(max_workers=1)
+                                self._suffix_cache_initialized = False
 
-                        logger.info(
-                            "Using ParallelSuffixDecodingProposer (batch operations, "
-                            "enable_in_flight_updates=%s)",
-                            srt_config.enable_in_flight_updates,
-                        )
-                        self.drafter = ParallelSuffixDecodingProposer(
-                            num_speculative_tokens=srt_config.num_speculative_tokens,
-                            max_tree_depth=srt_config.max_tree_depth,
-                            max_spec_factor=srt_config.max_spec_factor,
-                            min_token_prob=srt_config.min_token_prob,
-                            max_model_len=vllm_config.model_config.max_model_len,
-                            enable_in_flight_updates=srt_config.enable_in_flight_updates,
-                        )
+                                from recipe.srt.srt_plugin.proposers.suffix_decoding_shm import (
+                                    SharedMemorySuffixDecodingProposer,
+                                )
+
+                                # Pass suffix_cache=None, proposer will lazily init
+                                self.drafter = SharedMemorySuffixDecodingProposer(
+                                    num_speculative_tokens=srt_config.num_speculative_tokens,
+                                    max_model_len=vllm_config.model_config.max_model_len,
+                                    spec_prefix_len=7,  # SPECRL_PREFIX_LEN
+                                    min_token_prob=srt_config.min_token_prob,
+                                    suffix_cache=None,  # Lazy initialization
+                                )
+                                logger.info(
+                                    "Using SharedMemorySuffixDecodingProposer (shared memory mode, lazy init)"
+                                )
+                            except ImportError as e:
+                                logger.error(
+                                    f"Failed to import SharedMemorySuffixDecodingProposer: {e}. "
+                                    "Falling back to snapshot mode."
+                                )
+                                cache_mode = "snapshot"
+                                self._srt_cache_mode = cache_mode
+
+                        if cache_mode == "snapshot":
+                            # Snapshot mode: Use ParallelSuffixDecodingProposer (existing)
+                            from recipe.srt.srt_plugin.proposers.suffix_decoding_parallel import (
+                                ParallelSuffixDecodingProposer,
+                            )
+
+                            logger.info(
+                                "Using ParallelSuffixDecodingProposer (batch operations, "
+                                "enable_in_flight_updates=%s)",
+                                srt_config.enable_in_flight_updates,
+                            )
+                            self.drafter = ParallelSuffixDecodingProposer(
+                                num_speculative_tokens=srt_config.num_speculative_tokens,
+                                max_tree_depth=srt_config.max_tree_depth,
+                                max_spec_factor=srt_config.max_spec_factor,
+                                min_token_prob=srt_config.min_token_prob,
+                                max_model_len=vllm_config.model_config.max_model_len,
+                                enable_in_flight_updates=srt_config.enable_in_flight_updates,
+                            )
 
                     # Set up rejection sampler (same as other spec decode methods)
                     self.rejection_sampler = RejectionSampler()
@@ -145,6 +213,77 @@ def apply_patches():
                 # For non-suffix methods, just call original init
                 _original_init(self, vllm_config, device)
 
+        def __del__(self):
+            """Cleanup resources."""
+            if hasattr(self, '_cache_updater') and self._cache_updater is not None:
+                self._cache_updater.shutdown(wait=False)
+
+        def _ensure_suffix_cache_initialized(self):
+            """Lazily initialize SuffixCache on first use.
+
+            The cache server may not be running when the worker starts,
+            so we defer initialization until the first execute_model call.
+            """
+            if not getattr(self, '_suffix_cache_initialized', True):
+                try:
+                    from specrl.suffix_cache import SuffixCache
+                    self._suffix_cache = SuffixCache()
+                    self._suffix_cache_initialized = True
+
+                    # Also inject into proposer if it exists
+                    if hasattr(self, 'drafter') and hasattr(self.drafter, '_cache'):
+                        self.drafter._cache = self._suffix_cache
+
+                    logger.info("Lazily initialized SuffixCache for shared memory mode")
+                except Exception as e:
+                    logger.warning(f"Failed to initialize SuffixCache: {e}. "
+                                   "Speculation will not use shared memory.")
+                    self._suffix_cache = None
+                    self._suffix_cache_initialized = True
+
+        def execute_model(
+            self,
+            scheduler_output,
+            intermediate_tensors=None,
+        ):
+            """Extended execute_model with shared memory cache lifecycle hooks.
+
+            For shared memory mode:
+            1. Lazily initialize SuffixCache if needed
+            2. Evict finished requests from cache
+            3. Submit async fetch for new requests
+            4. Run original execute_model
+            """
+            from concurrent.futures import Future
+
+            # Lazy init for shared memory mode
+            if self._srt_cache_mode == "shared_memory":
+                self._ensure_suffix_cache_initialized()
+
+            if self._srt_cache_mode == "shared_memory" and self._suffix_cache is not None:
+                # 1. Cleanup finished requests
+                for req_id in scheduler_output.finished_req_ids:
+                    try:
+                        self._suffix_cache.evict_responses(req_id)
+                    except Exception as e:
+                        logger.debug(f"evict_responses failed for {req_id}: {e}")
+
+                # 2. Async fetch for new requests
+                if scheduler_output.scheduled_new_reqs:
+                    def fetch_suffix_responses():
+                        req_ids = [r.req_id for r in scheduler_output.scheduled_new_reqs]
+                        prompts = [r.prompt_token_ids for r in scheduler_output.scheduled_new_reqs]
+                        self._suffix_cache.fetch_responses_by_prompts_batch(req_ids, prompts)
+                        return 1
+
+                    self._fetch_future = self._cache_updater.submit(fetch_suffix_responses)
+                else:
+                    self._fetch_future = Future()
+                    self._fetch_future.set_result(1)
+
+            # Call original execute_model
+            return _original_execute_model(self, scheduler_output, intermediate_tensors)
+
         def propose_draft_token_ids(
             self,
             scheduler_output,
@@ -156,7 +295,7 @@ def apply_patches():
             spec_decode_metadata,
             common_attn_metadata,
         ):
-            """Extended propose_draft_token_ids with suffix method handling."""
+            """Extended propose_draft_token_ids with suffix method handling and fetch sync."""
             # Check suffix method directly from speculative_config
             is_suffix_method = (
                 self.speculative_config is not None
@@ -184,11 +323,22 @@ def apply_patches():
             # Handle suffix method
             if is_suffix_method:
                 assert isinstance(sampled_token_ids, list)
-                from recipe.srt.srt_plugin.proposers.suffix_decoding_parallel import (
-                    ParallelSuffixDecodingProposer,
-                )
 
-                assert isinstance(self.drafter, ParallelSuffixDecodingProposer)
+                # For shared memory mode: wait for async fetch and update spec_len
+                if self._srt_cache_mode == "shared_memory":
+                    # Wait for async fetch to complete before speculation
+                    if self._fetch_future is not None:
+                        self._fetch_future.result()
+                        self._fetch_future = None
+
+                    # Update spec_len for cache coherency
+                    if self._suffix_cache is not None:
+                        for i, token_ids in enumerate(sampled_token_ids):
+                            if token_ids and i < len(self.input_batch.req_ids):
+                                req_id = self.input_batch.req_ids[i]
+                                self._suffix_cache.update_spec_len(req_id, len(token_ids))
+
+                # Dispatch to drafter (both modes use same interface)
                 draft_token_ids = self.drafter.propose(
                     input_batch=self.input_batch, sampled_token_ids=sampled_token_ids
                 )

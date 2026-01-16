@@ -31,353 +31,210 @@ This document outlines the migration plan for SRT (Speculative Rollout with Tree
                                            └────────────────┘
 ```
 
-- One `RolloutCacheServer` per node owns shared memory segment
-- `SuffixCacheUpdater` (trainer) sends updates via gRPC
-- `SuffixCache` (vLLM workers) attaches to shared memory for zero-copy reads
-- Trees built directly in shared memory using Ukkonen's algorithm
+In `/home/ubuntu/verl_srt/recipe/specRL`, it also contain the SuffixTree-based Rollout Cache for performing speculative decoding. Different to our snapshot pushing structure, the specRL allocated the shared memory on each servers. At verl side, it directly update the contents in shared memory and the cache owned in the vLLM workers side directly read through it. 
 
-### Benefits of Migration
 
-1. **Zero-copy reads**: Workers read directly from shared memory, no deserialization
-2. **Memory efficiency**: Single copy of trees shared across all workers on a node
-3. **Lower latency**: No serialization/transfer overhead for updates
-4. **Proven implementation**: SpecRL's C++ library is production-tested
+### Target Requirements
 
-### Concerns
+- migrate this styles of implementation as an other options into our srt Recipe. 
+- If possible, I wish to have both style (e.g., snapshot-based and shared memory) supported and we can toggled over them. 
 
-1. **500GB pre-allocation**: SpecRL hardcodes 500GB shared memory (virtual, not physical)
-2. **C++ complexity**: Requires building and maintaining native extensions
-3. **Multi-node coordination**: gRPC adds complexity for distributed setups
+## Implementation (Completed)
 
----
+The shared memory migration has been implemented with a configuration toggle between both approaches.
 
-## Migration Phases
+### New Files Created
 
-### Phase 1: C++ Infrastructure
+| File | Purpose |
+|------|---------|
+| `recipe/srt/shared_memory_cache_manager.py` | Wraps SpecRL's CacheManager for SRT trainer |
+| `recipe/srt/srt_plugin/patches/shm_patches.py` | Entry point for shared memory mode patches |
+| `recipe/srt/srt_plugin/proposers/suffix_decoding_shm.py` | Proposer wrapping SuffixCache for speculation |
 
-| Task | Description | Effort | Notes |
-|------|-------------|--------|-------|
-| **Decision: Reuse vs Custom** | Decide whether to reuse SpecRL's `spec_rl_cache_impl` or write custom implementation | Low | SpecRL's is production-ready but has 500GB hardcoded |
-| **Adapt Shared Memory Size** | If reusing, modify `rollout_cache_server.h` to make `SHARED_MEMORY_SIZE` configurable (env var or constructor param) | Low | Change constant to runtime config |
-| **Build C++ Library** | Build `specrl_cache` wheel with pybind bindings for `SuffixCache`, `RolloutCacheServer`, `SuffixCacheUpdater` | Medium | Requires Boost, gRPC, protobuf |
+### Modified Files
 
-#### Key Files (SpecRL Reference)
+| File | Changes |
+|------|---------|
+| `recipe/srt/ray_trainer.py` | Dual-mode init, mode routing, metrics, cleanup |
+| `recipe/srt/vllm_server.py` | Cache mode detection, conditional patching |
+| `recipe/srt/srt_plugin/patches/runner_patches.py` | Dual-mode GPUModelRunner patches, execute_model hooks |
+| `recipe/srt/srt_plugin/config.py` | Added `cache_mode` field to SRTSuffixConfig |
 
-```
-recipe/specRL/spec_rl_cache_impl/
-├── specrl/
-│   ├── suffix_cache/           # vLLM worker side
-│   │   ├── suffix_tree.h/cc    # Ukkonen's suffix tree
-│   │   ├── suffix_cache.h/cc   # Shared memory reader
-│   │   ├── rollout_cache_server.h/cc  # gRPC server + shm owner
-│   │   └── pybind.cc
-│   ├── cache_updater/          # Trainer side
-│   │   ├── suffix_cache_updater.h/cc  # gRPC client
-│   │   └── pybind.cc
-│   └── proto/
-│       └── rollout-cache.proto
+### Configuration
+
+```yaml
+actor_rollout_ref:
+  rollout:
+    enable_srt: true
+    srt_cache_mode: "shared_memory"  # or "snapshot" (default)
+    srt_max_tree_depth: 64
+    srt_hash_token_count: 128
+    srt_num_speculative_tokens: 24
+    srt_shared_memory:
+      port: 6378
+      memory_size_gb: 100
 ```
 
-#### Configuration Change Example
+### Architecture Comparison
 
-```cpp
-// Current (hardcoded in rollout_cache_server.h)
-const unsigned long long SHARED_MEMORY_SIZE = 500ULL * 1024ULL * 1024ULL * 1024ULL;
+#### Snapshot Mode (Default)
+```
+Before rollout:
+  Trainer: get_snapshot() → serialize trees
+  Trainer: collective_rpc → push to workers
+  Workers: load_suffix_snapshot() → deserialize
 
-// Proposed (configurable)
-unsigned long long get_shared_memory_size() {
-    const char* env = std::getenv("SRT_SHARED_MEMORY_SIZE_GB");
-    return env ? std::stoull(env) * 1024ULL * 1024ULL * 1024ULL
-               : 50ULL * 1024ULL * 1024ULL * 1024ULL;  // Default 50GB
-}
+During rollout:
+  Workers: ParallelSuffixDecodingProposer.propose() → use local cache
+
+After rollout:
+  Trainer: update_from_rollout() → add to local trees
 ```
 
----
+#### Shared Memory Mode
+```
+Before rollout:
+  (nothing - trees already in shared memory from previous batch)
 
-### Phase 2: Server Component
+During rollout:
+  Workers: SuffixCache.fetch_responses_by_prompts_batch() → read from shm
+  Workers: SuffixCache.speculate() → get drafts from shm
+  Workers: SuffixCache.evict_responses() → cleanup on finish
 
-| Task | Description | Files Affected |
-|------|-------------|----------------|
-| **Create Cache Server Launcher** | Add code to spawn `RolloutCacheServer` per node (one per machine) | New: `recipe/srt/cache_server.py` |
-| **Integrate with vLLM Server** | Start cache server before vLLM server, ensure proper cleanup | `recipe/srt/vllm_server.py` |
-
-#### Example: Cache Server Launcher
-
-```python
-# recipe/srt/cache_server.py
-import os
-from specrl_cache import RolloutCacheServer
-
-class CacheServerManager:
-    """Manages the RolloutCacheServer lifecycle."""
-
-    def __init__(self, port: int = 50051):
-        self.port = port
-        self.server = None
-
-    def start(self):
-        """Start the cache server (should be called once per node)."""
-        self.server = RolloutCacheServer()
-        self.server.Initialize()
-        self.server.Run(f"0.0.0.0:{self.port}")
-        return self
-
-    def stop(self):
-        """Stop the cache server and cleanup shared memory."""
-        if self.server:
-            self.server.Shutdown()
-            self.server = None
+After rollout:
+  Trainer: update_from_rollout() → async gRPC to RolloutCacheServer
+  Server: builds trees in shared memory for next batch
 ```
 
-#### Integration with vLLM Server
+### Key Differences
 
-```python
-# In recipe/srt/vllm_server.py
-class SRTvLLMServer:
-    def __init__(self, ...):
-        # Start cache server before vLLM
-        self.cache_server = CacheServerManager(port=config.cache_server_port)
-        self.cache_server.start()
+| Aspect | Snapshot (SRT Default) | Shared Memory (SpecRL) |
+|--------|------------------------|------------------------|
+| Patch mechanism | `worker_extension_cls` | Unified `runner_patches.py` |
+| Cache class | `ParallelSuffixDecodingCache` | `SuffixCache` (C++ shared mem) |
+| Loading | `load_snapshot()` before rollout | No loading, direct shm access |
+| Speculation | Via `Proposer.propose()` | Via `Proposer.propose()` with lifecycle hooks |
+| Update timing | After rollout (for next) | After rollout (async gRPC) |
+| Serialization | Yes (pickle-like) | No (zero-copy) |
 
-        # Then start vLLM server
-        self.vllm_server = ...
+### GPUModelRunner Lifecycle Hooks (Shared Memory Mode)
 
-    def shutdown(self):
-        self.vllm_server.shutdown()
-        self.cache_server.stop()
+The `runner_patches.py` module extends GPUModelRunner with lifecycle hooks following SpecRL patterns:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ execute_model(scheduler_output)                             │
+├─────────────────────────────────────────────────────────────┤
+│ 1. CLEANUP FINISHED                                         │
+│    for req_id in scheduler_output.finished_req_ids:         │
+│        _suffix_cache.evict_responses(req_id)                │
+│                                                             │
+│ 2. ASYNC FETCH NEW REQUESTS                                 │
+│    if scheduler_output.scheduled_new_reqs:                  │
+│        future = _cache_updater.submit(                      │
+│            fetch_responses_by_prompts_batch(...)            │
+│        )                                                    │
+│                                                             │
+│ 3. RUN MODEL (original execute_model)                       │
+│    → fetch happens in background via ThreadPoolExecutor     │
+└─────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────┐
+│ propose_draft_token_ids(...)                                │
+├─────────────────────────────────────────────────────────────┤
+│ 1. WAIT FOR FETCH (shared_memory mode only)                 │
+│    _fetch_future.result()                                   │
+│                                                             │
+│ 2. UPDATE SPEC_LEN (shared_memory mode only)                │
+│    for each sampled token:                                  │
+│        _suffix_cache.update_spec_len(req_id, len(tokens))   │
+│                                                             │
+│ 3. PROPOSE DRAFTS                                           │
+│    drafter.propose(input_batch, sampled_token_ids)          │
+│    → SharedMemorySuffixDecodingProposer.speculate()         │
+└─────────────────────────────────────────────────────────────┘
 ```
 
----
+Key implementation details:
+- `ThreadPoolExecutor(max_workers=1)` for async cache fetches
+- Fetch submitted in `execute_model()`, awaited in `propose_draft_token_ids()`
+- `update_spec_len()` called for cache coherency before speculation
+- Fallback to snapshot mode if SuffixCache import fails
 
-### Phase 3: Writer Side (Trainer)
+### Metrics
 
-| Task | Description | Files Affected |
-|------|-------------|----------------|
-| **Replace SuffixTreeManager Backend** | Swap `ParallelSuffixDecodingCache` with `SuffixCacheUpdater` for writes | `recipe/srt/suffix_tree_manager.py` |
-| **Update Training Loop** | Remove `load_suffix_snapshot()` calls; updater pushes via gRPC automatically | `recipe/srt/ray_trainer.py` |
-| **Adapt update_from_rollout()** | Call `SuffixCacheUpdater.UpdateCache()` instead of building local trees | `recipe/srt/suffix_tree_manager.py` |
+#### Snapshot Mode
+- `timing/push_suffix_snapshot` - Time to serialize and push
+- `suffix_tree/trees_transferred` - Trees sent per batch
+- `suffix_tree/transfer_bytes` - Bytes transferred
 
-#### Example: Modified SuffixTreeManager
+#### Shared Memory Mode
+- `timing/update_cache_shm` - Time to send gRPC update
+- `shm_cache/update_submitted` - Updates sent
+- `shm_cache/batch_size` - Prompts per update
+- `shm_cache/response_tokens` - Tokens per update
+- `shm_cache/num_servers` - Active cache servers
+- `shm_cache/total_updates` - Cumulative updates
+- `shm_cache/pending_futures` - Async updates in flight
 
-```python
-# recipe/srt/suffix_tree_manager.py (after migration)
-from specrl_cache import SuffixCacheUpdater
+### Usage Notes
 
-class SuffixTreeManager:
-    def __init__(self, config, tokenizer):
-        self.config = config
-        self.tokenizer = tokenizer
+1. **Shared memory mode requires `specrl` package** - The SuffixCache C++ extension must be installed
 
-        # Replace ParallelSuffixDecodingCache with SuffixCacheUpdater
-        self.updater = SuffixCacheUpdater()
+2. **Environment variable** - When shared_memory mode is configured, the trainer sets `SRT_CACHE_MODE=shared_memory` for worker processes to detect
 
-        # Connect to all cache servers (one per node)
-        for server_addr in config.cache_server_addresses:
-            self.updater.AddServer(server_addr)
+3. **Cache servers** - In shared_memory mode, one `RolloutCacheServer` is deployed per GPU node via Ray actors
 
-    def update_from_rollout(self, batch) -> dict:
-        """Update cache with new rollout results."""
-        updates = []
-        for i in range(len(batch)):
-            prompt_tokens = batch.input_ids[i]
-            response_tokens = batch.responses[i]
+4. **Runahead support** - Both modes fully support runahead generation with `_update_suffix_trees_from_secondary()`
 
-            # Compute hash for tree lookup
-            hash_tokens = prompt_tokens[:self.config.hash_token_count]
-            prompt_hash = self._compute_hash(hash_tokens)
+## Test Support
 
-            updates.append({
-                "hash": prompt_hash,
-                "tokens": response_tokens.tolist(),
-            })
+The `test_runahead_suffix_effectiveness.py` test file has been updated to support both cache modes.
 
-        # Send updates via gRPC to all servers
-        self.updater.UpdateCache(updates)
+### Test Usage
 
-        return {"num_updates": len(updates)}
+```bash
+# Run with snapshot mode (default, existing behavior)
+python tests/workers/rollout/rollout_vllm/test_runahead_suffix_effectiveness.py --cache-mode snapshot
 
-    # No more get_snapshot() or load_snapshot() needed!
+# Run with shared memory mode
+python tests/workers/rollout/rollout_vllm/test_runahead_suffix_effectiveness.py --cache-mode shared_memory --shm-port 6378
+
+# Compare both modes
+for mode in snapshot shared_memory; do
+    python tests/workers/rollout/rollout_vllm/test_runahead_suffix_effectiveness.py \
+        --cache-mode $mode \
+        --output "results_${mode}.json"
+done
 ```
 
-#### Training Loop Changes
+### Test Architecture
 
-```python
-# recipe/srt/ray_trainer.py (after migration)
+The test uses a `CacheManagerInterface` abstraction to support both modes:
 
-# BEFORE (snapshot-based):
-# if self.suffix_tree_manager.enabled:
-#     snapshots, hash_mapping = self.suffix_tree_manager.get_snapshot()
-#     self.actor_rollout_wg.load_suffix_snapshot(snapshots, hash_mapping)
-
-# AFTER (shared memory):
-# Nothing needed before rollout - workers already have access via shared memory
-
-# Generate sequences (workers read from shared memory automatically)
-output = self.actor_rollout_wg.generate_sequences(prompts)
-
-# Update cache (gRPC pushes to all servers)
-if self.suffix_tree_manager.enabled:
-    suffix_stats = self.suffix_tree_manager.update_from_rollout(batch)
+```
+CacheManagerInterface (abstract)
+├── SnapshotCacheManager       # Wraps SuffixTreeManager
+│   ├── add_sequence()         # Adds to local trees
+│   ├── push_to_workers()      # Serializes and pushes snapshot
+│   └── get_metrics()          # Returns tree stats
+│
+└── SharedMemoryCacheManagerTest  # Wraps SpecRL infrastructure
+    ├── add_sequence()         # Queues for batch update
+    ├── flush_pending_sequences()  # Sends gRPC to cache server
+    ├── push_to_workers()      # No-op (shm access direct)
+    └── get_metrics()          # Returns shm stats
 ```
 
----
+### Key Differences in Test Flow
 
-### Phase 4: Reader Side (vLLM Workers)
-
-| Task | Description | Files Affected |
-|------|-------------|----------------|
-| **Create SuffixCache-based Proposer** | New proposer that reads from shared memory via `SuffixCache` | `recipe/srt/vllm_plugin/proposers/suffix_decoding_shm.py` |
-| **Remove Snapshot Loading** | Delete `worker_extension.py` or replace with no-op | `recipe/srt/vllm_plugin/worker_extension.py` |
-| **Update vLLM Patches** | Modify patches to initialize `SuffixCache` reader | `recipe/srt/vllm_plugin/patches/` |
-
-#### Example: Shared Memory Proposer
-
-```python
-# recipe/srt/vllm_plugin/proposers/suffix_decoding_shm.py
-from specrl_cache import SuffixCache
-
-class SuffixDecodingSHMProposer:
-    """Suffix decoding proposer using shared memory cache."""
-
-    def __init__(self, ...):
-        # Attach to existing shared memory (created by RolloutCacheServer)
-        self.suffix_cache = SuffixCache()  # Opens "SUFFIX_CACHE" segment
-
-    def get_spec_proposals(
-        self,
-        request_ids: list[str],
-        prompt_hashes: list[int],
-        seq_lens: list[int],
-        query_lens: list[int],
-        ...
-    ):
-        """Get speculation proposals from shared memory cache."""
-        # Register requests with cache
-        for req_id, prompt_hash in zip(request_ids, prompt_hashes):
-            self.suffix_cache.StartRequest(req_id, prompt_hash)
-
-        # Get draft tokens from cache (zero-copy read from shared memory)
-        draft_tokens = self.suffix_cache.Speculate(
-            request_ids,
-            current_tokens,  # Last N tokens for tree traversal
-            max_spec_len=self.num_speculative_tokens
-        )
-
-        return draft_tokens
-
-    def update_from_accepted(self, request_id: str, accepted_tokens: list[int]):
-        """Update cache position after verification."""
-        self.suffix_cache.UpdatePosition(request_id, len(accepted_tokens))
-
-    def finish_request(self, request_id: str):
-        """Cleanup when request completes."""
-        self.suffix_cache.FinishRequest(request_id)
-```
-
-#### Worker Extension Removal
-
-```python
-# recipe/srt/vllm_plugin/worker_extension.py
-
-# BEFORE: Complex snapshot loading logic
-# class SuffixTreeWorkerExtension:
-#     def load_suffix_snapshot(self, snapshots, hash_mapping):
-#         ...
-
-# AFTER: No-op or remove entirely
-class SuffixTreeWorkerExtension:
-    """No longer needed - workers read directly from shared memory."""
-
-    def load_suffix_snapshot(self, *args, **kwargs):
-        # No-op for backwards compatibility
-        return {"status": "skipped", "reason": "using_shared_memory"}
-```
-
----
-
-### Phase 5: Testing & Validation
-
-| Task | Description | Priority |
-|------|-------------|----------|
-| **Integration Tests** | Test server startup, gRPC updates, worker reads | High |
-| **Multi-Process Tests** | Verify multiple vLLM workers can read concurrently | High |
-| **Stress Tests** | Test with many concurrent updates and reads | Medium |
-| **Benchmark** | Compare latency/throughput vs snapshot-based approach | Medium |
-| **Memory Tests** | Verify shared memory cleanup on shutdown | High |
-
-#### Test Scenarios
-
-```python
-# tests/srt/test_shared_memory_cache.py
-
-def test_server_startup():
-    """Test RolloutCacheServer creates shared memory correctly."""
-    server = RolloutCacheServer()
-    server.Initialize()
-    # Verify shared memory segment exists
-    cache = SuffixCache()  # Should attach successfully
-    server.Shutdown()
-
-def test_update_and_read():
-    """Test trainer can update and workers can read."""
-    # Start server
-    server = RolloutCacheServer()
-    server.Initialize()
-
-    # Trainer updates
-    updater = SuffixCacheUpdater()
-    updater.AddServer("localhost:50051")
-    updater.UpdateCache([{"hash": 12345, "tokens": [1, 2, 3, 4, 5]}])
-
-    # Worker reads
-    cache = SuffixCache()
-    cache.StartRequest("req1", 12345)
-    drafts = cache.Speculate(["req1"], [[1, 2]], max_spec_len=3)
-    assert drafts[0] == [3, 4, 5]
-
-def test_concurrent_reads():
-    """Test multiple processes can read simultaneously."""
-    # Spawn multiple reader processes
-    # Verify no crashes or data corruption
-```
-
----
-
-## Key Decisions Required
-
-Before starting implementation, clarify:
-
-1. **Reuse SpecRL's C++?**
-   - Yes: Copy `spec_rl_cache_impl/`, adapt configuration
-   - No: Write custom implementation (significant effort)
-
-2. **Shared Memory Size**
-   - Configurable via env var? (Recommended)
-   - Fixed value? What size? (50GB suggested default)
-
-3. **Single-node or Multi-node?**
-   - Single-node only: Can simplify by removing gRPC, using direct shm writes
-   - Multi-node: Need gRPC for cross-node updates
-
-4. **Backwards Compatibility**
-   - Keep snapshot-based code path as fallback?
-   - Clean removal of old code?
-
----
-
-## File Changes Summary
-
-| File | Change Type | Description |
-|------|-------------|-------------|
-| `recipe/srt/cache_server.py` | **NEW** | Cache server launcher/manager |
-| `recipe/srt/suffix_tree_manager.py` | **MODIFY** | Replace backend with SuffixCacheUpdater |
-| `recipe/srt/ray_trainer.py` | **MODIFY** | Remove snapshot loading calls |
-| `recipe/srt/vllm_server.py` | **MODIFY** | Integrate cache server lifecycle |
-| `recipe/srt/vllm_plugin/proposers/suffix_decoding_shm.py` | **NEW** | Shared memory proposer |
-| `recipe/srt/vllm_plugin/worker_extension.py` | **DELETE/MODIFY** | Remove or no-op |
-| `recipe/srt/vllm_plugin/patches/runner_patches.py` | **MODIFY** | Initialize SuffixCache |
-
----
+| Aspect | Snapshot Mode | Shared Memory Mode |
+|--------|--------------|-------------------|
+| Cache init | `SuffixTreeManager` | Deploy `CacheWorker` actor |
+| Add sequence | `add_sequence()` immediately | Queue, then `flush_pending_sequences()` |
+| Push to workers | `load_suffix_snapshot()` | No-op (workers read from shm) |
+| Cleanup | None needed | Shutdown cache server actor |
+| Worker patches | `worker_extension_cls` | `SRT_CACHE_MODE` env var |
 
 ## Related Documentation
 

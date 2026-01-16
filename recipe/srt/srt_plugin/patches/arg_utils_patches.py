@@ -57,8 +57,13 @@ def apply_patches():
         If speculative_config contains srt_* prefixed keys, they are extracted
         and registered via SRTSuffixConfig. Only vLLM-standard keys are passed
         to SpeculativeConfig validation.
+
+        srt_cache_mode is set as an attribute on the returned SpeculativeConfig
+        for worker processes to access.
         """
         from recipe.srt.srt_plugin.config import SRTSuffixConfig
+
+        srt_cache_mode = None  # Will be set if SRT is enabled
 
         if self.speculative_config:
             # Extract SRT params and register
@@ -68,23 +73,33 @@ def apply_patches():
             SRTSuffixConfig.register(srt_config)
 
             if srt_config.enabled:
+                # Save cache_mode to set on SpeculativeConfig later
+                srt_cache_mode = srt_config.cache_mode
                 logger.info(
                     f"Registered SRTSuffixConfig: method={srt_config.method}, "
                     f"num_speculative_tokens={srt_config.num_speculative_tokens}, "
-                    f"max_tree_depth={srt_config.max_tree_depth}"
+                    f"max_tree_depth={srt_config.max_tree_depth}, "
+                    f"cache_mode={srt_config.cache_mode}"
                 )
 
             # Replace with filtered dict for SpeculativeConfig validation
             self.speculative_config = vllm_only
 
         # Call original method with filtered config
-        return _original_create_speculative_config(
+        result = _original_create_speculative_config(
             self,
             target_model_config,
             target_parallel_config,
             enable_chunked_prefill,
             disable_log_stats,
         )
+
+        # Set srt_cache_mode as attribute on result for worker access
+        if result is not None and srt_cache_mode is not None:
+            result.srt_cache_mode = srt_cache_mode
+            logger.debug(f"Set srt_cache_mode={srt_cache_mode} on SpeculativeConfig")
+
+        return result
 
     # Apply patch
     AsyncEngineArgs.create_speculative_config = patched_create_speculative_config

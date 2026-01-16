@@ -34,6 +34,9 @@ from tqdm import tqdm
 
 from recipe.srt.suffix_tree_manager import SuffixTreeManager, SuffixTreeManagerConfig
 from verl import DataProto
+
+# Type hint for SharedMemoryCacheManager (imported conditionally)
+SharedMemoryCacheManager = None
 from verl.experimental.dataset.sampler import AbstractCurriculumSampler
 from verl.protocol import pad_dataproto_to_divisor, unpad_dataproto
 from verl.single_controller.ray import RayWorkerGroup
@@ -92,6 +95,10 @@ class SRTRayPPOTrainer(RayPPOTrainer):
         # Inject vLLM engine_kwargs for suffix decoding if SRT is enabled
         self._inject_srt_engine_kwargs(config)
 
+        # Store references for SharedMemoryCacheManager initialization
+        self._role_worker_mapping = role_worker_mapping
+        self._resource_pool_manager = resource_pool_manager
+
         super().__init__(
             config,
             tokenizer,
@@ -108,37 +115,78 @@ class SRTRayPPOTrainer(RayPPOTrainer):
             device_name,
         )
 
-        # Initialize suffix tree manager for speculative decoding
-        self.suffix_tree_manager = self._init_suffix_tree_manager()
+        # Initialize cache manager based on mode
+        cache_mode = self._srt_config.get("srt_cache_mode", "snapshot")
+
+        if cache_mode == "shared_memory" and self._srt_config.get("enable_srt", False):
+            # Shared memory mode: Initialize SharedMemoryCacheManager
+            # (actual server deployment happens in init_workers after workers are up)
+            from recipe.srt.shared_memory_cache_manager import SharedMemoryCacheManager
+
+            self.shm_cache_manager = SharedMemoryCacheManager(
+                config=self._srt_config,
+                role_worker_mapping=self._role_worker_mapping,
+                resource_pool_manager=self._resource_pool_manager,
+                tokenizer=self.tokenizer,
+                port=self._srt_config["srt_shared_memory"]["port"],
+            )
+            # Create disabled placeholder for API compatibility
+            self.suffix_tree_manager = SuffixTreeManager(
+                SuffixTreeManagerConfig(enable=False), self.tokenizer
+            )
+            print("SRT: Using SharedMemoryCacheManager (shared_memory mode)")
+        else:
+            # Snapshot mode (default): Use SuffixTreeManager
+            self.suffix_tree_manager = self._init_suffix_tree_manager()
+            self.shm_cache_manager = None
 
     def _inject_srt_engine_kwargs(self, config):
         """Inject vLLM engine_kwargs for suffix decoding when SRT is enabled.
 
-        This automatically configures vLLM to use the ParallelSuffixDecodingProposer
-        when enable_srt=True, so users don't need to manually specify engine_kwargs.
+        This automatically configures vLLM to use the appropriate speculative
+        decoding setup based on srt_cache_mode:
+        - "snapshot" (default): Uses ParallelSuffixDecodingProposer with worker_extension_cls
+        - "shared_memory": Uses SpecRL's GPUModelRunnerPatch for zero-copy shared memory
 
         Also stores SRT config values in self._srt_config and removes them from
         rollout_config to avoid RolloutConfig schema validation errors.
         """
+        import os
+
         from omegaconf import OmegaConf, open_dict
 
         rollout_config = config.actor_rollout_ref.rollout
         enable_srt = rollout_config.get("enable_srt", False)
 
+        # Get cache mode (snapshot or shared_memory)
+        cache_mode = rollout_config.get("srt_cache_mode", "snapshot")
+
+        # Get shared memory config (nested dict)
+        shm_config = rollout_config.get("srt_shared_memory", {})
+        if not isinstance(shm_config, dict):
+            shm_config = OmegaConf.to_container(shm_config, resolve=True) if shm_config else {}
+
         # Store SRT config for later use (before removing from rollout_config)
         self._srt_config = {
             "enable_srt": enable_srt,
+            "srt_cache_mode": cache_mode,
             "srt_max_tree_depth": rollout_config.get("srt_max_tree_depth", 64),
             "srt_hash_token_count": rollout_config.get("srt_hash_token_count", 128),
             "srt_num_speculative_tokens": rollout_config.get("srt_num_speculative_tokens", 24),
+            "srt_shared_memory": {
+                "port": shm_config.get("port", 6378),
+                "memory_size_gb": shm_config.get("memory_size_gb", 100),
+            },
         }
 
         # Remove SRT fields from rollout_config to avoid RolloutConfig schema errors
         srt_fields = [
             "enable_srt",
+            "srt_cache_mode",
             "srt_max_tree_depth",
             "srt_hash_token_count",
             "srt_num_speculative_tokens",
+            "srt_shared_memory",
         ]
         with open_dict(config):
             for field in srt_fields:
@@ -165,37 +213,69 @@ class SRTRayPPOTrainer(RayPPOTrainer):
                 engine_kwargs.vllm = OmegaConf.create({})
                 vllm_kwargs = engine_kwargs.vllm
 
-            # Use vLLM's --speculative-config JSON argument format
-            # SRT params use srt_ prefix and are extracted by arg_utils_patches
-            # before SpeculativeConfig validation. See config.py:SRTSuffixConfig
-            speculative_config = {
-                "method": "suffix",
-                "num_speculative_tokens": num_speculative_tokens,
-                # SRT-specific params (extracted by SRTSuffixConfig.extract_from_dict)
-                "srt_max_tree_depth": max_tree_depth,
-                "srt_max_spec_factor": 1.0,
-                "srt_min_token_prob": 0.1,
-                "srt_enable_in_flight_updates": True,
-            }
+            if cache_mode == "shared_memory":
+                # Shared memory mode: Use SpecRL's GPUModelRunnerPatch
+                # GPUModelRunner will be patched to use SuffixCache directly
+                # Set environment variable for worker processes to detect mode
+                os.environ["SRT_CACHE_MODE"] = "shared_memory"
 
-            # Merge with existing speculative_config if present
-            existing_spec_config = vllm_kwargs.get("speculative_config")
-            if existing_spec_config is not None:
-                if isinstance(existing_spec_config, dict):
-                    speculative_config.update(existing_spec_config)
+                # Mark for shared memory mode (patches check this)
+                vllm_kwargs.srt_use_shared_memory = True
 
-            vllm_kwargs.speculative_config = speculative_config
+                # No speculative_config needed - patching handles speculation
+                # No worker_extension_cls - patches applied via WorkerBasePatch
 
-            # Add worker_extension_cls to inject load_suffix_snapshot method into workers
-            # This enables collective_rpc calls from the server to load suffix tree snapshots
-            vllm_kwargs.worker_extension_cls = (
-                "recipe.srt.srt_plugin.worker_extension.SuffixTreeWorkerExtension"
-            )
+                print(
+                    f"SRT: Configured for shared memory mode "
+                    f"(port={self._srt_config['srt_shared_memory']['port']})"
+                )
 
-        print(
-            f"SRT: Configured vLLM speculative_config: {speculative_config}, "
-            f"worker_extension_cls: recipe.srt.srt_plugin.worker_extension.SuffixTreeWorkerExtension"
-        )
+            else:
+                # Snapshot mode (default): Use worker_extension_cls and speculative_config
+                # Use vLLM's --speculative-config JSON argument format
+                # SRT params use srt_ prefix and are extracted by arg_utils_patches
+                # before SpeculativeConfig validation. See config.py:SRTSuffixConfig
+                speculative_config = {
+                    "method": "suffix",
+                    "num_speculative_tokens": num_speculative_tokens,
+                    # SRT-specific params (extracted by SRTSuffixConfig.extract_from_dict)
+                    "srt_max_tree_depth": max_tree_depth,
+                    "srt_max_spec_factor": 1.0,
+                    "srt_min_token_prob": 0.1,
+                    "srt_enable_in_flight_updates": True,
+                }
+
+                # Merge with existing speculative_config if present
+                existing_spec_config = vllm_kwargs.get("speculative_config")
+                if existing_spec_config is not None:
+                    if isinstance(existing_spec_config, dict):
+                        speculative_config.update(existing_spec_config)
+
+                vllm_kwargs.speculative_config = speculative_config
+
+                # Add worker_extension_cls to inject load_suffix_snapshot method into workers
+                # This enables collective_rpc calls from the server to load suffix tree snapshots
+                vllm_kwargs.worker_extension_cls = (
+                    "recipe.srt.srt_plugin.worker_extension.SuffixTreeWorkerExtension"
+                )
+
+                print(
+                    f"SRT: Configured for snapshot mode with speculative_config: {speculative_config}, "
+                    f"worker_extension_cls: recipe.srt.srt_plugin.worker_extension.SuffixTreeWorkerExtension"
+                )
+
+    def init_workers(self):
+        """Initialize workers with cache infrastructure.
+
+        Overrides parent to initialize shared memory cache servers after
+        workers are up (for shared_memory mode).
+        """
+        super().init_workers()
+
+        # Initialize shared memory cache servers after workers are ready
+        if self.shm_cache_manager is not None:
+            print("SRT: Initializing shared memory cache servers...")
+            self.shm_cache_manager.initialize()
 
     def _init_suffix_tree_manager(self) -> SuffixTreeManager:
         """Initialize SuffixTreeManager for speculative decoding.
@@ -226,11 +306,18 @@ class SRTRayPPOTrainer(RayPPOTrainer):
         This method extracts batch hashes, creates selective snapshots, and
         distributes them to all rollout replicas.
 
+        Note: In shared_memory mode, this is a no-op because workers access
+        the cache directly via shared memory (populated by previous updates).
+
         Args:
             gen_batch_output: Batch to be generated (contains prompts)
             metrics: Metrics dict to update with transfer stats
             timing_raw: Timing dict for profiling
         """
+        # Shared memory mode: no snapshot pushing needed
+        if self.shm_cache_manager is not None:
+            return
+
         if not self.suffix_tree_manager.enabled:
             return
 
@@ -303,6 +390,14 @@ class SRTRayPPOTrainer(RayPPOTrainer):
             metrics: Metrics dict to update with tree stats
             timing_raw: Timing dict for profiling
         """
+        # Shared memory mode: send async gRPC updates
+        if self.shm_cache_manager is not None:
+            with marked_timer("update_cache_shm", timing_raw):
+                responses_per_prompt = self.config.actor_rollout_ref.rollout.n
+                stats = self.shm_cache_manager.update_from_rollout(batch, responses_per_prompt)
+                metrics.update(stats)
+            return
+
         if not self.suffix_tree_manager.enabled:
             return
 
@@ -329,6 +424,16 @@ class SRTRayPPOTrainer(RayPPOTrainer):
             metrics: Metrics dict to update.
             timing_raw: Timing dict for profiling.
         """
+        # Shared memory mode: use SharedMemoryCacheManager
+        if self.shm_cache_manager is not None:
+            with marked_timer("update_cache_shm_secondary", timing_raw):
+                responses_per_prompt = self.config.actor_rollout_ref.rollout.n
+                stats = self.shm_cache_manager.update_from_secondary(
+                    secondary_outputs, responses_per_prompt
+                )
+                metrics.update(stats)
+            return
+
         if not self.suffix_tree_manager.enabled:
             return
 
@@ -895,8 +1000,10 @@ class SRTRayPPOTrainer(RayPPOTrainer):
                 n_gpus = self.resource_pool_manager.get_n_gpus()
                 metrics.update(compute_throughout_metrics(batch=batch, timing_raw=timing_raw, n_gpus=n_gpus))
 
-                # Add suffix tree metrics
-                if self.suffix_tree_manager.enabled:
+                # Add suffix tree / shared memory cache metrics
+                if self.shm_cache_manager is not None:
+                    metrics.update(self.shm_cache_manager.get_metrics())
+                elif self.suffix_tree_manager.enabled:
                     metrics.update(self.suffix_tree_manager.get_metrics())
 
                 # this is experimental and may be changed/removed in the future
@@ -919,6 +1026,9 @@ class SRTRayPPOTrainer(RayPPOTrainer):
                 if is_last_step:
                     if hasattr(self.actor_rollout_wg, "async_calls_finalize_fn_exec"):
                         self.actor_rollout_wg.async_calls_finalize_fn_exec(blocking=True)
+                    # Cleanup shared memory cache manager
+                    if self.shm_cache_manager is not None:
+                        self.shm_cache_manager.shutdown()
                     pprint(f"Final validation metrics: {last_val_metrics}")
                     progress_bar.close()
                     return
@@ -1341,8 +1451,10 @@ class SRTRayPPOTrainer(RayPPOTrainer):
                 n_gpus = self.resource_pool_manager.get_n_gpus()
                 metrics.update(compute_throughout_metrics(batch=batch, timing_raw=timing_raw, n_gpus=n_gpus))
 
-                # Add suffix tree metrics
-                if self.suffix_tree_manager.enabled:
+                # Add suffix tree / shared memory cache metrics
+                if self.shm_cache_manager is not None:
+                    metrics.update(self.shm_cache_manager.get_metrics())
+                elif self.suffix_tree_manager.enabled:
                     metrics.update(self.suffix_tree_manager.get_metrics())
 
                 # this is experimental and may be changed/removed in the future
@@ -1365,6 +1477,9 @@ class SRTRayPPOTrainer(RayPPOTrainer):
                 if is_last_step:
                     if hasattr(self.actor_rollout_wg, "async_calls_finalize_fn_exec"):
                         self.actor_rollout_wg.async_calls_finalize_fn_exec(blocking=True)
+                    # Cleanup shared memory cache manager
+                    if self.shm_cache_manager is not None:
+                        self.shm_cache_manager.shutdown()
                     pprint(f"Final validation metrics: {last_val_metrics}")
                     progress_bar.close()
                     return
