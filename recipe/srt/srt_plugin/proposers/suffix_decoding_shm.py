@@ -29,7 +29,7 @@ NOT inside propose(). This proposer only builds patterns and calls speculate().
 
 Usage:
     # In runner_patches.py (shared_memory mode)
-    from specrl.suffix_cache import SuffixCache
+    from srt_plugin.shm_cache.suffix_cache import SuffixCache
 
     # Config comes from SRTSuffixConfig (populated from speculative_config dict)
     suffix_cache = SuffixCache(
@@ -131,7 +131,7 @@ class SharedMemorySuffixDecodingProposer:
         uses defaults for standalone/testing use.
         """
         try:
-            from specrl.suffix_cache import SuffixCache
+            from srt_plugin.shm_cache.suffix_cache import SuffixCache
 
             # Use defaults - in normal operation, cache is injected with proper config
             self._cache = SuffixCache()  # Uses C++ defaults: "", 2, 16
@@ -139,8 +139,8 @@ class SharedMemorySuffixDecodingProposer:
                 "SharedMemorySuffixDecodingProposer: Created new SuffixCache connection (defaults)"
             )
         except ImportError as e:
-            logger.error(f"Failed to import SuffixCache from specrl: {e}")
-            logger.error("Shared memory proposer requires the specrl package to be installed.")
+            logger.error(f"Failed to import SuffixCache from srt_plugin.shm_cache: {e}")
+            logger.error("Shared memory proposer requires the srt_plugin package to be installed with shm_cache extensions.")
             self._cache = None
         except Exception as e:
             logger.error(f"Failed to initialize SuffixCache: {e}")

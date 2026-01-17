@@ -221,11 +221,11 @@ class SharedMemoryCacheManager:
         server_addresses = self._get_server_addresses()
 
         try:
-            from specrl.cache_updater import SuffixCacheUpdater
+            from srt_plugin.shm_cache.cache_updater import SuffixCacheUpdater
             self._cache_updater = SuffixCacheUpdater(server_addresses=server_addresses)
         except ImportError as e:
-            logger.error(f"Failed to import SuffixCacheUpdater from specrl: {e}")
-            logger.error("Shared memory mode requires the specrl package to be installed.")
+            logger.error(f"Failed to import SuffixCacheUpdater from srt_plugin.shm_cache: {e}")
+            logger.error("Shared memory mode requires the srt_plugin package to be installed with shm_cache extensions.")
             raise
 
         # Thread pool for async cache updates

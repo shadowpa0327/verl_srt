@@ -46,7 +46,7 @@ class CacheWorker:
         self.port = port
         self.shared_memory_name = shared_memory_name
 
-        from specrl.suffix_cache import RolloutCacheServer
+        from srt_plugin.shm_cache.suffix_cache import RolloutCacheServer
 
         # Initialize the rollout cache server with IPv6 support ([::])
         # RolloutCacheServer takes (server_address, shared_memory_size_gb, shared_memory_name)
@@ -198,7 +198,7 @@ class CacheManager:
         # Collect server addresses for distributed updates
         server_addresses = self._get_server_addresses()
 
-        from specrl.cache_updater import SuffixCacheUpdater
+        from srt_plugin.shm_cache.cache_updater import SuffixCacheUpdater
 
         # Initialize cache updater (it manages its own thread pool internally)
         self._cache_updater = SuffixCacheUpdater(server_addresses=server_addresses)

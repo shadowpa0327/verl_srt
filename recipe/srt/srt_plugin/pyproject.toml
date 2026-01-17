@@ -1,12 +1,17 @@
 # SRT Plugin for vLLM
 #
 # This package includes:
-# - Suffix cache with C++ extension for high-performance suffix tree operations
-# - vLLM patches for suffix decoding speculative generation
-# - Proposer implementations for suffix-based speculation
+# - suffix_cache: In-process snapshot mode C++ extension (nanobind)
+# - shm_cache: Shared memory mode with gRPC (pybind11)
+#   - shm_cache.suffix_cache: SuffixCache, RolloutCacheServer
+#   - shm_cache.cache_updater: SuffixCacheUpdater
 #
-# INSTALLATION (single command):
-#   pip install -e recipe/srt/srt_plugin
+# INSTALLATION:
+#   uv pip install -e recipe/srt/srt_plugin
+#
+# NOTE: shm_cache requires system dependencies (protobuf, grpc, boost, xxhash).
+#       Without these, only suffix_cache will be built.
+#       See install.sh for system dependency installation.
 #
 # USAGE:
 #   Plugin is enabled by default after installation.
@@ -16,7 +21,7 @@
 #   VERL_SRT_DISABLED=1 python my_training_script.py
 
 [build-system]
-requires = ["setuptools>=61.0", "wheel", "cmake>=3.18", "nanobind>=1.0.0", "ninja"]
+requires = ["setuptools>=61.0", "wheel", "cmake>=3.18", "nanobind>=1.0.0", "pybind11>=2.10.0", "ninja"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -29,11 +34,30 @@ dependencies = [
 ]
 
 [project.entry-points."vllm.general_plugins"]
-srt_suffix_decoding = "recipe.srt.srt_plugin.patch:srt_plugin"
+srt_suffix_decoding = "srt_plugin.patch:srt_plugin"
 
 [tool.setuptools]
 include-package-data = true
+# Explicit package list (no auto-discovery)
+packages = [
+    "srt_plugin",
+    "srt_plugin.suffix_cache",
+    "srt_plugin.proposers",
+    "srt_plugin.patches",
+    "srt_plugin.shm_cache",
+    "srt_plugin.shm_cache.suffix_cache",
+    "srt_plugin.shm_cache.cache_updater",
+]
 
-[tool.setuptools.packages.find]
-where = ["../../.."]
-include = ["recipe.srt.srt_plugin*"]
+# This directory IS the srt_plugin package
+[tool.setuptools.package-dir]
+"srt_plugin" = "."
+"srt_plugin.suffix_cache" = "suffix_cache"
+"srt_plugin.proposers" = "proposers"
+"srt_plugin.patches" = "patches"
+"srt_plugin.shm_cache" = "shm_cache"
+"srt_plugin.shm_cache.suffix_cache" = "shm_cache/suffix_cache"
+"srt_plugin.shm_cache.cache_updater" = "shm_cache/cache_updater"
+
+[tool.setuptools.package-data]
+"*" = ["*.so"]

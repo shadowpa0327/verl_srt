@@ -57,10 +57,10 @@ except ImportError:
 SHM_AVAILABLE = False
 try:
     # Just check if the module exists without importing cache_updater
-    import specrl.suffix_cache
+    import srt_plugin.shm_cache.suffix_cache
     SHM_AVAILABLE = True
 except ImportError:
-    print("Warning: SpecRL SuffixCache not available (shared memory mode)")
+    print("Warning: SRT SHM SuffixCache not available (shared memory mode)")
 
 
 @dataclass
@@ -311,7 +311,7 @@ def run_shm_benchmark_multiprocess(
         # Step 1: Start server process
         server_code = '''
 import time
-from specrl.suffix_cache import RolloutCacheServer
+from srt_plugin.shm_cache.suffix_cache import RolloutCacheServer
 
 server = RolloutCacheServer('[::]:16379', shared_memory_size_gb=1)
 if not server.initialize():
@@ -351,7 +351,7 @@ server.shutdown()
         # Step 2: Populate cache via separate process
         populate_code = f'''
 import json
-from specrl.cache_updater import SuffixCacheUpdater
+from srt_plugin.shm_cache.cache_updater import SuffixCacheUpdater
 
 with open("{data_file}") as f:
     data = json.load(f)
@@ -390,7 +390,7 @@ print("POPULATED")
 import json
 import time
 import numpy as np
-from specrl.suffix_cache import SuffixCache
+from srt_plugin.shm_cache.suffix_cache import SuffixCache
 
 with open("{data_file}") as f:
     data = json.load(f)

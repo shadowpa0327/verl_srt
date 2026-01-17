@@ -238,7 +238,7 @@ def apply_patches():
             """
             if not getattr(self, '_suffix_cache_initialized', True):
                 try:
-                    from specrl.suffix_cache import SuffixCache
+                    from srt_plugin.shm_cache.suffix_cache import SuffixCache
 
                     # Read configuration from instance variables (set in __init__)
                     shared_memory_name = getattr(self, '_shm_shared_memory_name', "")
