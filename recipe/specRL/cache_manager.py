@@ -35,19 +35,22 @@ class CacheWorker:
     via gRPC to accelerate rollout generation during PPO training.
     """
 
-    def __init__(self, port: int = 6378):
+    def __init__(self, port: int = 6378, shared_memory_name: str = ""):
         """Initialize and start the cache server.
 
         Args:
             port: Port number for the gRPC server (default: 6378)
+            shared_memory_name: Name for the shared memory segment (default: 'SUFFIX_CACHE')
         """
 
         self.port = port
+        self.shared_memory_name = shared_memory_name
 
         from specrl.suffix_cache import RolloutCacheServer
 
         # Initialize the rollout cache server with IPv6 support ([::])
-        self.server = RolloutCacheServer(f"[::]:{port}")
+        # RolloutCacheServer takes (server_address, shared_memory_size_gb, shared_memory_name)
+        self.server = RolloutCacheServer(f"[::]:{port}", 0, shared_memory_name)
         self.server.initialize()
 
         # Start server in a separate process with CPU affinity to avoid interference with GPU workers
@@ -77,19 +80,22 @@ class CacheWorker:
             print(f"Cache server error: {e}")
 
     def get_node_ip(self) -> str:
-        """Get the IPv6 address of the node this worker is running on.
+        """Get the IP address of the node this worker is running on.
 
         Returns:
-            IPv6 address of the current node
+            Routable IP address of the current node (IPv4 preferred)
         """
-        # Get all address info for the hostname, filtering for IPv6
-        hostname = socket.gethostname()
-        addr_info = socket.getaddrinfo(hostname, None, socket.AF_INET6)
-        # Return the first IPv6 address found
-        if addr_info:
-            return addr_info[0][4][0]
-        # Fallback to localhost IPv6 if no address found
-        return "::1"
+        # Use Ray's node IP which returns a proper routable address
+        # This avoids issues with IPv6 link-local addresses that aren't routable
+        return ray._private.services.get_node_ip_address()
+
+    def get_shared_memory_name(self) -> str:
+        """Get the shared memory name used by this cache server.
+
+        Returns:
+            The shared memory segment name
+        """
+        return self.server.get_shared_memory_name()
 
     def shutdown(self):
         """Shutdown the cache server and cleanup resources."""
@@ -132,6 +138,7 @@ class CacheManager:
         role_worker_mapping: dict,
         resource_pool_manager,
         port: int = 6378,
+        shared_memory_name: str = "",
     ):
         """Initialize cache manager if speculative decoding is enabled.
 
@@ -139,6 +146,8 @@ class CacheManager:
             config: Training configuration
             role_worker_mapping: Mapping from roles to worker types
             resource_pool_manager: Ray resource pool manager
+            port: Port number for the gRPC server (default: 6378)
+            shared_memory_name: Name for the shared memory segment (default: 'SUFFIX_CACHE')
         """
         self.config = config
         self.role_worker_mapping = role_worker_mapping
@@ -151,6 +160,7 @@ class CacheManager:
         self._max_futures = 5
         self._executor = None
         self.port = port
+        self.shared_memory_name = shared_memory_name
 
         # Check if cache is enabled
         self._enabled = self._should_enable_cache()
@@ -183,7 +193,7 @@ class CacheManager:
         resource_pool = self.resource_pool_manager.get_resource_pool(actor_role)
 
         # Create cache servers (one per GPU node)
-        self._cache_servers = self._create_cache_servers(resource_pool, self.port)
+        self._cache_servers = self._create_cache_servers(resource_pool, self.port, self.shared_memory_name)
 
         # Collect server addresses for distributed updates
         server_addresses = self._get_server_addresses()
@@ -199,15 +209,16 @@ class CacheManager:
         print(f"Cache manager initialized with {len(self._cache_servers)} servers on ports {self.port}")
         print(f"Server addresses: {server_addresses}")
 
-    def _create_cache_servers(self, resource_pool, port: int) -> list[dict]:
+    def _create_cache_servers(self, resource_pool, port: int, shared_memory_name: str = "") -> list[dict]:
         """Create cache server workers on each GPU node.
 
         Args:
             resource_pool: Ray resource pool for placement
             port: gRPC server port
+            shared_memory_name: Name for the shared memory segment
 
         Returns:
-            List of dicts with {server, ip, port} for each node
+            List of dicts with {server, ip, port, shared_memory_name} for each node
         """
         from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
@@ -230,16 +241,18 @@ class CacheManager:
             server = CacheWorker.options(
                 scheduling_strategy=strategy,
                 name=f"cache_server_{node_id}",
-            ).remote(port=port)
+            ).remote(port=port, shared_memory_name=shared_memory_name)
 
-            # Get node's IPv6 address
+            # Get node's IPv6 address and actual shared memory name
             ip = ray.get(server.get_node_ip.remote())
+            actual_shm_name = ray.get(server.get_shared_memory_name.remote())
 
             servers.append(
                 {
                     "server": server,
                     "ip": ip,
                     "port": port,
+                    "shared_memory_name": actual_shm_name,
                 }
             )
 
@@ -249,7 +262,7 @@ class CacheManager:
         """Get formatted gRPC addresses for all cache servers.
 
         Returns:
-            List of addresses in format '[<ipv6>]:<port>'
+            List of addresses in format '<ip>:<port>' (with brackets for IPv6)
         """
         if not self._cache_servers:
             return []
@@ -258,8 +271,11 @@ class CacheManager:
         for server_info in self._cache_servers:
             ip = server_info["ip"]
             port = server_info["port"]
-            # Format IPv6 address with brackets for gRPC
-            address = f"[{ip}]:{port}"
+            # Format address for gRPC - IPv6 needs brackets, IPv4 does not
+            if ":" in ip:  # IPv6 address contains colons
+                address = f"[{ip}]:{port}"
+            else:
+                address = f"{ip}:{port}"
             addresses.append(address)
 
         return addresses
@@ -326,6 +342,17 @@ class CacheManager:
         if not self._enabled:
             return None
         return self._get_server_addresses()
+
+    def get_shared_memory_name(self) -> str | None:
+        """Get the shared memory name used by the cache servers.
+
+        Returns:
+            The shared memory segment name or None if disabled
+        """
+        if not self._enabled or not self._cache_servers:
+            return None
+        # All servers should use the same shared memory name
+        return self._cache_servers[0].get("shared_memory_name")
 
     @property
     def enabled(self) -> bool:

@@ -236,6 +236,29 @@ CacheManagerInterface (abstract)
 | Cleanup | None needed | Shutdown cache server actor |
 | Worker patches | `worker_extension_cls` | `SRT_CACHE_MODE` env var |
 
+## Known Issues Fixed
+
+### 1. IPv6 Link-Local Address Issue
+**Symptom:** `Failed to connect to all addresses` when trainer tries to update cache
+
+**Root Cause:** `CacheWorker.get_node_ip()` was returning IPv6 link-local addresses (e.g., `fe80::466:16ff:fe8a:ce62`) which are not routable without scope IDs.
+
+**Fix:** Changed `get_node_ip()` in `recipe/specRL/cache_manager.py` to use `ray._private.services.get_node_ip_address()` which returns routable IPv4 addresses.
+
+### 2. IPv4 Address with Brackets
+**Symptom:** `DNS resolution failed` when using IPv4 addresses like `[172.27.124.20]:6378`
+
+**Root Cause:** `_get_server_addresses()` was adding brackets to all addresses, but brackets are only valid for IPv6. gRPC interprets bracketed IPv4 as a hostname requiring DNS resolution.
+
+**Fix:** Updated `_get_server_addresses()` in both `recipe/specRL/cache_manager.py` and `recipe/srt/shared_memory_cache_manager.py` to only add brackets for IPv6 addresses (those containing `:`).
+
+### 3. Early SuffixCache Initialization
+**Symptom:** `No such file or directory` error when workers start before cache server
+
+**Root Cause:** `SharedMemorySuffixDecodingProposer` was trying to create a `SuffixCache` connection immediately in `__init__`, but the shared memory segment hadn't been created yet.
+
+**Fix:** Changed `suffix_decoding_shm.py` to support lazy initialization - when `suffix_cache=None`, the cache is not created immediately. The cache is injected later by `runner_patches.py` via `_ensure_suffix_cache_initialized()` after the cache server has started.
+
 ## Related Documentation
 
 - [SpecRL Cache Implementation Analysis](../recipe/specRL/SPEC_RL_CACHE_IMPL_ANALYSIS.md) - Detailed C++ implementation analysis

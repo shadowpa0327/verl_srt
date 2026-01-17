@@ -47,7 +47,16 @@ struct SuffixSpecResult {
  */
 class SuffixCache {
 public:
-    SuffixCache();
+    /**
+     * Constructor for SuffixCache.
+     * @param shared_memory_name The name of the shared memory segment to connect to.
+     *                           Defaults to DEFAULT_SHARED_MEMORY_NAME ("SUFFIX_CACHE").
+     * @param spec_start_len The initial/minimum speculation length (default: 2).
+     * @param spec_max_len The maximum speculation length (default: 16).
+     */
+    SuffixCache(const std::string& shared_memory_name = "",
+                int spec_start_len = 2,
+                int spec_max_len = 16);
 
     /**
      * Destructor for SuffixCache.
@@ -96,6 +105,13 @@ public:
         bool use_tree_spec = false);
 
 private:
+    // Shared memory name
+    std::string shared_memory_name_;
+
+    // Configurable speculation length parameters
+    int spec_start_len_;  // Initial/minimum speculation length
+    int spec_max_len_;    // Maximum speculation length
+
     // Shared memory related members
     boost::interprocess::managed_shared_memory* shared_memory_segment_ = nullptr;
     SharedTreeMap* shared_tree_map_ = nullptr;

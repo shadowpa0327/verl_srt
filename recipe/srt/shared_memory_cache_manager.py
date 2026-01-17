@@ -71,6 +71,8 @@ class SharedMemoryCacheManager:
         resource_pool_manager,
         tokenizer,
         port: int = 6378,
+        memory_size_gb: int = 100,
+        shared_memory_name: str = "",
     ):
         """
         Initialize SharedMemoryCacheManager.
@@ -81,12 +83,16 @@ class SharedMemoryCacheManager:
             resource_pool_manager: Ray resource pool manager for placement group access.
             tokenizer: Tokenizer for encoding prompts/responses (may be needed for future features).
             port: gRPC server port for cache servers (default: 6378).
+            memory_size_gb: Shared memory size in GB (default: 100).
+            shared_memory_name: Name for the shared memory segment (default: "" uses "SUFFIX_CACHE").
         """
         self._config = config
         self._role_worker_mapping = role_worker_mapping
         self._resource_pool_manager = resource_pool_manager
         self._tokenizer = tokenizer
         self._port = port
+        self._memory_size_gb = memory_size_gb
+        self._shared_memory_name = shared_memory_name
 
         # Internal state
         self._cache_servers: List[dict] = []
@@ -99,6 +105,58 @@ class SharedMemoryCacheManager:
         # Statistics
         self._total_updates = 0
         self._total_tokens_sent = 0
+
+    def _get_routable_ip(self, server) -> str:
+        """
+        Get a routable IP address for the cache server, preferring IPv4.
+
+        IPv6 link-local addresses (fe80::...) don't work with gRPC because they
+        require a scope ID (%eth0) which gRPC doesn't support. This method
+        prefers IPv4 addresses which are always routable.
+
+        Args:
+            server: The CacheWorker Ray actor.
+
+        Returns:
+            A routable IP address (IPv4 preferred, falls back to Ray's default).
+        """
+        import subprocess
+
+        # First try to get IPv4 addresses from the node
+        try:
+            # Run hostname -I on the remote node via the server actor
+            ray_ip = ray.get(server.get_node_ip.remote())
+
+            # If it's not a link-local IPv6, use it directly
+            if not ray_ip.startswith("fe80:"):
+                return ray_ip
+
+            # Ray returned link-local IPv6, try to find IPv4 alternative
+            # We run hostname -I locally since CacheWorker is on the same node
+            # as the resource pool placement
+            result = subprocess.run(
+                ["hostname", "-I"], capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0:
+                addresses = result.stdout.strip().split()
+                # Prefer IPv4 (no colons) and non-localhost
+                for addr in addresses:
+                    if ":" not in addr and not addr.startswith("127."):
+                        logger.info(
+                            f"Using IPv4 address {addr} instead of link-local IPv6 {ray_ip}"
+                        )
+                        return addr
+
+            # No IPv4 found, return Ray's address (will likely fail but log clearly)
+            logger.warning(
+                f"No IPv4 address found, using link-local IPv6 {ray_ip} "
+                f"(gRPC connection may fail)"
+            )
+            return ray_ip
+
+        except Exception as e:
+            logger.warning(f"Error getting routable IP: {e}, falling back to Ray default")
+            return ray.get(server.get_node_ip.remote())
 
     def initialize(self):
         """
@@ -140,16 +198,23 @@ class SharedMemoryCacheManager:
             server = CacheWorker.options(
                 scheduling_strategy=strategy,
                 name=f"srt_shm_cache_server_{node_id[:8]}",  # Truncate node_id for readability
-            ).remote(port=self._port)
+            ).remote(
+                port=self._port,
+                shared_memory_name=self._shared_memory_name,
+            )
 
-            # Get node's IPv6 address
-            ip = ray.get(server.get_node_ip.remote())
+            # Get routable IP address (prefers IPv4 over IPv6 link-local)
+            ip = self._get_routable_ip(server)
+
+            # Get actual shared memory name (may have been auto-generated if empty)
+            actual_shm_name = ray.get(server.get_shared_memory_name.remote())
 
             self._cache_servers.append({
                 "server": server,
                 "ip": ip,
                 "port": self._port,
                 "node_id": node_id,
+                "shared_memory_name": actual_shm_name,
             })
 
         # Create updater with server addresses
@@ -167,14 +232,26 @@ class SharedMemoryCacheManager:
         self._executor = ThreadPoolExecutor(max_workers=self._max_futures)
         self._enabled = True
 
+        # Get actual shared memory name from first server (all should be the same)
+        actual_shm_name = self._cache_servers[0].get("shared_memory_name", "SUFFIX_CACHE") if self._cache_servers else "SUFFIX_CACHE"
         logger.info(
-            f"SharedMemoryCacheManager: Deployed {len(self._cache_servers)} cache servers on port {self._port}"
+            f"SharedMemoryCacheManager: Deployed {len(self._cache_servers)} cache servers "
+            f"(port={self._port}, shm_name={actual_shm_name})"
         )
         logger.info(f"Server addresses: {server_addresses}")
 
     def _get_server_addresses(self) -> List[str]:
         """Get formatted gRPC addresses for all cache servers."""
-        return [f"[{s['ip']}]:{s['port']}" for s in self._cache_servers]
+        addresses = []
+        for s in self._cache_servers:
+            ip = s['ip']
+            port = s['port']
+            # Only add brackets for IPv6 addresses (contain colons)
+            if ":" in ip:
+                addresses.append(f"[{ip}]:{port}")
+            else:
+                addresses.append(f"{ip}:{port}")
+        return addresses
 
     @property
     def enabled(self) -> bool:

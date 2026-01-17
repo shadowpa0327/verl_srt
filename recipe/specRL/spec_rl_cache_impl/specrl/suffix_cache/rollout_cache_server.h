@@ -41,7 +41,7 @@
 extern std::mutex console_mutex;
 
 // Constants
-const char* const SHARED_MEMORY_NAME = "SUFFIX_CACHE";
+const char* const DEFAULT_SHARED_MEMORY_NAME = "SUFFIX_CACHE";
 const unsigned long long DEFAULT_SHARED_MEMORY_SIZE = 500ULL * 1024ULL * 1024ULL * 1024ULL;  // 500GB default
 
 // Using declarations for Boost.Interprocess
@@ -75,7 +75,8 @@ private:
 class RolloutCacheServer {
 public:
     RolloutCacheServer(const std::string& server_address,
-                       unsigned long long shared_memory_size_gb = 0);
+                       unsigned long long shared_memory_size_gb = 0,
+                       const std::string& shared_memory_name = DEFAULT_SHARED_MEMORY_NAME);
     ~RolloutCacheServer();
 
     // Initialize the shared memory and create the service
@@ -90,9 +91,13 @@ public:
     // Shutdown the server
     void Shutdown();
 
+    // Get the shared memory name
+    const std::string& get_shared_memory_name() const { return shared_memory_name_; }
+
 private:
     std::string server_address_;
     unsigned long long shared_memory_size_;
+    std::string shared_memory_name_;
     managed_shared_memory* segment_;
     SharedTreeMap* tree_map_;
     RolloutCacheServiceImpl* service_;

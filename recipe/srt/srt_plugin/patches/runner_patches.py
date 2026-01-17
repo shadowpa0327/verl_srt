@@ -158,6 +158,11 @@ def apply_patches():
                                 self._cache_updater = ThreadPoolExecutor(max_workers=1)
                                 self._suffix_cache_initialized = False
 
+                                # Store shared memory config for lazy initialization
+                                self._shm_shared_memory_name = srt_config.shared_memory_name
+                                self._shm_spec_start_len = srt_config.spec_start_len
+                                self._shm_spec_max_len = srt_config.spec_max_len
+
                                 from recipe.srt.srt_plugin.proposers.suffix_decoding_shm import (
                                     SharedMemorySuffixDecodingProposer,
                                 )
@@ -171,7 +176,9 @@ def apply_patches():
                                     suffix_cache=None,  # Lazy initialization
                                 )
                                 logger.info(
-                                    "Using SharedMemorySuffixDecodingProposer (shared memory mode, lazy init)"
+                                    f"Using SharedMemorySuffixDecodingProposer (shared memory mode, lazy init, "
+                                    f"shm_name={srt_config.shared_memory_name or 'SUFFIX_CACHE'}, "
+                                    f"spec_len={srt_config.spec_start_len}-{srt_config.spec_max_len})"
                                 )
                             except ImportError as e:
                                 logger.error(
@@ -223,18 +230,38 @@ def apply_patches():
 
             The cache server may not be running when the worker starts,
             so we defer initialization until the first execute_model call.
+
+            Reads configuration from instance variables set during __init__:
+            - self._shm_shared_memory_name: Name of shared memory segment
+            - self._shm_spec_start_len: Initial/minimum speculation length
+            - self._shm_spec_max_len: Maximum speculation length
             """
             if not getattr(self, '_suffix_cache_initialized', True):
                 try:
                     from specrl.suffix_cache import SuffixCache
-                    self._suffix_cache = SuffixCache()
+
+                    # Read configuration from instance variables (set in __init__)
+                    shared_memory_name = getattr(self, '_shm_shared_memory_name', "")
+                    spec_start_len = getattr(self, '_shm_spec_start_len', 2)
+                    spec_max_len = getattr(self, '_shm_spec_max_len', 16)
+
+                    # Create SuffixCache with configurable parameters
+                    self._suffix_cache = SuffixCache(
+                        shared_memory_name=shared_memory_name,
+                        spec_start_len=spec_start_len,
+                        spec_max_len=spec_max_len,
+                    )
                     self._suffix_cache_initialized = True
 
                     # Also inject into proposer if it exists
                     if hasattr(self, 'drafter') and hasattr(self.drafter, '_cache'):
                         self.drafter._cache = self._suffix_cache
 
-                    logger.info("Lazily initialized SuffixCache for shared memory mode")
+                    logger.info(
+                        f"Lazily initialized SuffixCache for shared memory mode "
+                        f"(shm_name={shared_memory_name or 'SUFFIX_CACHE'}, "
+                        f"spec_len={spec_start_len}-{spec_max_len})"
+                    )
                 except Exception as e:
                     logger.warning(f"Failed to initialize SuffixCache: {e}. "
                                    "Speculation will not use shared memory.")

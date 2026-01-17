@@ -36,7 +36,16 @@ PYBIND11_MODULE(_C, m) {
                    py::call_guard<py::gil_scoped_release>());
 
     py::class_<SuffixCache>(m, "SuffixCache")
-        .def(py::init<>())
+        .def(py::init<const std::string&, int, int>(),
+             py::arg("shared_memory_name") = "",
+             py::arg("spec_start_len") = 2,
+             py::arg("spec_max_len") = 16,
+             "Create a SuffixCache.\n\n"
+             "Args:\n"
+             "    shared_memory_name: Name of the shared memory segment to connect to.\n"
+             "                        Defaults to 'SUFFIX_CACHE' if empty.\n"
+             "    spec_start_len: Initial/minimum speculation length (default: 2).\n"
+             "    spec_max_len: Maximum speculation length (default: 16).")
         .def("fetch_responses_by_prompts_batch", &SuffixCache::fetch_responses_by_prompts_batch,
              py::call_guard<py::gil_scoped_release>())
         .def("update_spec_len", &SuffixCache::update_spec_len,
@@ -52,13 +61,15 @@ PYBIND11_MODULE(_C, m) {
 
     // Register the RolloutCacheServer class
     py::class_<RolloutCacheServer>(m, "RolloutCacheServer")
-        .def(py::init<const std::string&, unsigned long long>(),
+        .def(py::init<const std::string&, unsigned long long, const std::string&>(),
              py::arg("server_address"),
              py::arg("shared_memory_size_gb") = 0,
+             py::arg("shared_memory_name") = "",
              "Create a RolloutCacheServer.\n\n"
              "Args:\n"
              "    server_address: gRPC server address (e.g., '[::]:6378')\n"
-             "    shared_memory_size_gb: Shared memory size in GB (default: 500GB)")
+             "    shared_memory_size_gb: Shared memory size in GB (default: 500GB)\n"
+             "    shared_memory_name: Name for the shared memory segment (default: 'SUFFIX_CACHE')")
         .def("initialize", &RolloutCacheServer::Initialize,
              py::call_guard<py::gil_scoped_release>(),
              "Initialize the shared memory and create the service")
@@ -70,5 +81,7 @@ PYBIND11_MODULE(_C, m) {
              "Wait for the server to shutdown")
         .def("shutdown", &RolloutCacheServer::Shutdown,
              py::call_guard<py::gil_scoped_release>(),
-             "Shutdown the server and clean up resources");
+             "Shutdown the server and clean up resources")
+        .def("get_shared_memory_name", &RolloutCacheServer::get_shared_memory_name,
+             "Get the name of the shared memory segment");
 }

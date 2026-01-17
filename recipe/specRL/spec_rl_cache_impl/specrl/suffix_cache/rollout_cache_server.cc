@@ -92,11 +92,13 @@ grpc::Status RolloutCacheServiceImpl::UpdateCache(
 
 // RolloutCacheServer methods implementation
 RolloutCacheServer::RolloutCacheServer(const std::string& server_address,
-                                       unsigned long long shared_memory_size_gb)
+                                       unsigned long long shared_memory_size_gb,
+                                       const std::string& shared_memory_name)
     : server_address_(server_address.empty() ? "[::]:6378" : server_address),
       shared_memory_size_(shared_memory_size_gb > 0
                           ? shared_memory_size_gb * 1024ULL * 1024ULL * 1024ULL
                           : DEFAULT_SHARED_MEMORY_SIZE),
+      shared_memory_name_(shared_memory_name.empty() ? DEFAULT_SHARED_MEMORY_NAME : shared_memory_name),
       segment_(nullptr), tree_map_(nullptr), service_(nullptr) {}
 
 RolloutCacheServer::~RolloutCacheServer() {
@@ -107,10 +109,10 @@ RolloutCacheServer::~RolloutCacheServer() {
 bool RolloutCacheServer::Initialize() {
     try {
         // First try to remove any existing shared memory
-        shared_memory_object::remove(SHARED_MEMORY_NAME);
+        shared_memory_object::remove(shared_memory_name_.c_str());
 
         // Create and initialize the shared memory segment
-        segment_ = new managed_shared_memory(create_only, SHARED_MEMORY_NAME, shared_memory_size_);
+        segment_ = new managed_shared_memory(create_only, shared_memory_name_.c_str(), shared_memory_size_);
 
         // Create a mutex in shared memory
         segment_->construct<interprocess_mutex>("mutex")();
@@ -124,7 +126,7 @@ bool RolloutCacheServer::Initialize() {
         // Create the service implementation
         service_ = new RolloutCacheServiceImpl(segment_, tree_map_);
 
-        std::cout << "Shared memory initialized: " << SHARED_MEMORY_NAME
+        std::cout << "Shared memory initialized: " << shared_memory_name_
                   << " (" << shared_memory_size_ / (1024 * 1024) << " MB)" << std::endl;
 
         return true;
@@ -134,7 +136,7 @@ bool RolloutCacheServer::Initialize() {
             delete segment_;
             segment_ = nullptr;
         }
-        shared_memory_object::remove(SHARED_MEMORY_NAME);
+        shared_memory_object::remove(shared_memory_name_.c_str());
         return false;
     }
 }
@@ -211,7 +213,7 @@ void RolloutCacheServer::Shutdown() {
         segment_ = nullptr;
 
         // Remove the shared memory from the system
-        shared_memory_object::remove(SHARED_MEMORY_NAME);
-        std::cout << "Shared memory removed: " << SHARED_MEMORY_NAME << std::endl;
+        shared_memory_object::remove(shared_memory_name_.c_str());
+        std::cout << "Shared memory removed: " << shared_memory_name_ << std::endl;
     }
 }

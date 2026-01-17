@@ -30,7 +30,13 @@ NOT inside propose(). This proposer only builds patterns and calls speculate().
 Usage:
     # In runner_patches.py (shared_memory mode)
     from specrl.suffix_cache import SuffixCache
-    suffix_cache = SuffixCache()
+
+    # Config comes from SRTSuffixConfig (populated from speculative_config dict)
+    suffix_cache = SuffixCache(
+        shared_memory_name=srt_config.shared_memory_name,
+        spec_start_len=srt_config.spec_start_len,
+        spec_max_len=srt_config.spec_max_len,
+    )
 
     self.drafter = SharedMemorySuffixDecodingProposer(
         num_speculative_tokens=24,
@@ -97,23 +103,41 @@ class SharedMemorySuffixDecodingProposer:
         self._spec_prefix_len = spec_prefix_len
         self._min_token_prob = min_token_prob
 
-        # Cache is injected by runner_patches (or created here as fallback)
+        # Cache is injected by runner_patches via lazy initialization.
+        # When suffix_cache=None is passed, we defer initialization until
+        # runner_patches injects the cache via self._cache = <SuffixCache instance>
+        # This avoids the "No such file or directory" error when shared memory
+        # hasn't been created yet.
         if suffix_cache is not None:
             self._cache = suffix_cache
             logger.info("SharedMemorySuffixDecodingProposer: Using injected SuffixCache")
         else:
-            self._initialize_cache()
+            # Lazy initialization: cache will be injected later by runner_patches
+            self._cache = None
+            logger.info("SharedMemorySuffixDecodingProposer: Lazy init mode (cache will be injected)")
 
         # Statistics
         self._total_proposals = 0
         self._total_draft_tokens = 0
 
     def _initialize_cache(self):
-        """Initialize the SuffixCache connection to shared memory (fallback)."""
+        """Initialize the SuffixCache connection to shared memory (fallback).
+
+        This is a fallback path used only if suffix_cache is not injected by
+        runner_patches.py. Uses default parameters.
+
+        NOTE: In normal operation, SuffixCache is created and injected by
+        runner_patches.py with config from SRTSuffixConfig. This fallback
+        uses defaults for standalone/testing use.
+        """
         try:
             from specrl.suffix_cache import SuffixCache
-            self._cache = SuffixCache()
-            logger.info("SharedMemorySuffixDecodingProposer: Created new SuffixCache connection")
+
+            # Use defaults - in normal operation, cache is injected with proper config
+            self._cache = SuffixCache()  # Uses C++ defaults: "", 2, 16
+            logger.info(
+                "SharedMemorySuffixDecodingProposer: Created new SuffixCache connection (defaults)"
+            )
         except ImportError as e:
             logger.error(f"Failed to import SuffixCache from specrl: {e}")
             logger.error("Shared memory proposer requires the specrl package to be installed.")

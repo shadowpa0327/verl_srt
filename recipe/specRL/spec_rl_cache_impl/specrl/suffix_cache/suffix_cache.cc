@@ -27,8 +27,9 @@
 #include <omp.h>
 #include <stdlib.h>
 
-const int SPEC_START_LEN = 2;
-const int SPEC_MAX_LEN = 16;
+// Default values for spec length parameters (now configurable via constructor)
+const int DEFAULT_SPEC_START_LEN = 2;
+const int DEFAULT_SPEC_MAX_LEN = 16;
 
 #include <mutex>
 
@@ -54,22 +55,27 @@ std::string SuffixCache::compute_prompt_hash(const std::vector<int>& prompt) {
     return ss.str();
 }
 
-SuffixCache::SuffixCache() {
+SuffixCache::SuffixCache(const std::string& shared_memory_name,
+                         int spec_start_len,
+                         int spec_max_len)
+    : shared_memory_name_(shared_memory_name.empty() ? DEFAULT_SHARED_MEMORY_NAME : shared_memory_name),
+      spec_start_len_(spec_start_len > 0 ? spec_start_len : DEFAULT_SPEC_START_LEN),
+      spec_max_len_(spec_max_len > 0 ? spec_max_len : DEFAULT_SPEC_MAX_LEN) {
     // Open the existing shared memory segment
     shared_memory_segment_ = new boost::interprocess::managed_shared_memory(
         boost::interprocess::open_only,
-        SHARED_MEMORY_NAME
+        shared_memory_name_.c_str()
     );
 
     // Find the tree map in shared memory
     shared_tree_map_ = shared_memory_segment_->find<SharedTreeMap>("tree_map").first;
 
     if (!shared_tree_map_) {
-        std::cerr << "Failed to find tree_map in shared memory" << std::endl;
+        std::cerr << "Failed to find tree_map in shared memory: " << shared_memory_name_ << std::endl;
         delete shared_memory_segment_;
         shared_memory_segment_ = nullptr;
     } else {
-        std::cout << "Successfully connected to shared memory cache" << std::endl;
+        std::cout << "Successfully connected to shared memory cache: " << shared_memory_name_ << std::endl;
     }
 
     setenv("OMP_WAIT_POLICY", "ACTIVE", 1);
@@ -100,7 +106,7 @@ void SuffixCache::fetch_responses_by_prompts_batch(const std::vector<std::string
 
         // Check if we already have responses for this request
         if (req_id_to_responses_.find(req_id) == req_id_to_responses_.end()) {
-            req_id_to_spec_len_[req_id] = SPEC_START_LEN;
+            req_id_to_spec_len_[req_id] = spec_start_len_;
             uint64_t req_hash = XXH64(prompt.data(), prompt.size() * sizeof(int), 0);
             req_hashes.push_back(req_hash);
             indices_to_process.push_back(i);
@@ -139,9 +145,9 @@ void SuffixCache::update_spec_len(const std::string& req_id, const int valid_len
     const int current_spec_len = req_id_to_spec_len_[req_id];
 
     if (valid_len > current_spec_len) {
-        req_id_to_spec_len_[req_id] = std::min(current_spec_len * 2, SPEC_MAX_LEN);
+        req_id_to_spec_len_[req_id] = std::min(current_spec_len * 2, spec_max_len_);
     } else {
-        req_id_to_spec_len_[req_id] = std::max(SPEC_START_LEN, current_spec_len / 2);
+        req_id_to_spec_len_[req_id] = std::max(spec_start_len_, current_spec_len / 2);
     }
 }
 

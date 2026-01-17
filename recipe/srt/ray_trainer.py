@@ -123,12 +123,15 @@ class SRTRayPPOTrainer(RayPPOTrainer):
             # (actual server deployment happens in init_workers after workers are up)
             from recipe.srt.shared_memory_cache_manager import SharedMemoryCacheManager
 
+            shm_config = self._srt_config["srt_shared_memory"]
             self.shm_cache_manager = SharedMemoryCacheManager(
                 config=self._srt_config,
                 role_worker_mapping=self._role_worker_mapping,
                 resource_pool_manager=self._resource_pool_manager,
                 tokenizer=self.tokenizer,
-                port=self._srt_config["srt_shared_memory"]["port"],
+                port=shm_config["port"],
+                memory_size_gb=shm_config.get("memory_size_gb", 100),
+                shared_memory_name=shm_config.get("shared_memory_name", ""),
             )
             # Create disabled placeholder for API compatibility
             self.suffix_tree_manager = SuffixTreeManager(
@@ -176,6 +179,9 @@ class SRTRayPPOTrainer(RayPPOTrainer):
             "srt_shared_memory": {
                 "port": shm_config.get("port", 6378),
                 "memory_size_gb": shm_config.get("memory_size_gb", 100),
+                "shared_memory_name": shm_config.get("shared_memory_name", ""),  # Empty = default "SUFFIX_CACHE"
+                "spec_start_len": shm_config.get("spec_start_len", 2),  # Initial/min speculation length
+                "spec_max_len": shm_config.get("spec_max_len", 16),  # Maximum speculation length
             },
         }
 
@@ -216,18 +222,35 @@ class SRTRayPPOTrainer(RayPPOTrainer):
             if cache_mode == "shared_memory":
                 # Shared memory mode: Use SpecRL's GPUModelRunnerPatch
                 # GPUModelRunner will be patched to use SuffixCache directly
-                # Set environment variable for worker processes to detect mode
+                shm_config = self._srt_config["srt_shared_memory"]
+
+                # Set env var for cache mode detection (used by runner_patches.py)
                 os.environ["SRT_CACHE_MODE"] = "shared_memory"
 
-                # Mark for shared memory mode (patches check this)
-                vllm_kwargs.srt_use_shared_memory = True
-
-                # No speculative_config needed - patching handles speculation
-                # No worker_extension_cls - patches applied via WorkerBasePatch
+                # Pass all SRT config through speculative_config dict
+                # Workers read these in runner_patches.py to configure SuffixCache
+                # Fields with srt_ prefix are extracted before vLLM validation
+                speculative_config = {
+                    "method": "suffix",
+                    "num_speculative_tokens": num_speculative_tokens,
+                    # SRT-specific params (extracted by SRTSuffixConfig.extract_from_dict)
+                    "srt_max_tree_depth": max_tree_depth,
+                    "srt_max_spec_factor": 1.0,
+                    "srt_min_token_prob": 0.1,
+                    "srt_enable_in_flight_updates": False,  # Disabled for shared_memory
+                    "srt_cache_mode": "shared_memory",
+                    # Shared memory specific params
+                    "srt_shared_memory_name": shm_config.get("shared_memory_name", ""),
+                    "srt_spec_start_len": shm_config.get("spec_start_len", 2),
+                    "srt_spec_max_len": shm_config.get("spec_max_len", 16),
+                }
+                vllm_kwargs.speculative_config = speculative_config
 
                 print(
                     f"SRT: Configured for shared memory mode "
-                    f"(port={self._srt_config['srt_shared_memory']['port']})"
+                    f"(port={shm_config.get('port', 'default')}, "
+                    f"name={shm_config.get('shared_memory_name') or 'SUFFIX_CACHE'}, "
+                    f"spec_len={shm_config.get('spec_start_len', 2)}-{shm_config.get('spec_max_len', 16)})"
                 )
 
             else:

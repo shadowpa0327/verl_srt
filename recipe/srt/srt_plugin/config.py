@@ -46,6 +46,11 @@ class SRTSuffixConfig:
     # zero-copy shared memory access via SpecRL's SuffixCache
     cache_mode: str = "snapshot"
 
+    # Shared memory mode specific params
+    shared_memory_name: str = ""  # Empty string means use default "SUFFIX_CACHE"
+    spec_start_len: int = 2  # Initial/minimum speculation length
+    spec_max_len: int = 16  # Maximum speculation length
+
     # Prefix for keys in speculative_config dict
     KEY_PREFIX = "srt_"
 

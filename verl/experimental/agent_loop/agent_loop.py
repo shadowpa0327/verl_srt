@@ -852,11 +852,9 @@ class AgentLoopManager:
             Dictionary of metrics for wandb logging.
         """
         delta = after - before
-
-        if delta.is_empty():
-            # No spec decode activity, return empty metrics
-            return {}
-
+        # Always compute stats, even when delta is empty (no speculation).
+        # This ensures metrics are logged with zero values so users can see
+        # speculation is enabled but cache is empty (vs disabled entirely).
         stats = SpecDecodeRolloutStats.from_delta(delta)
         return stats.to_metrics_dict()
 
