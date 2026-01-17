@@ -95,6 +95,12 @@ class SuffixTreeManager:
         self._batch_counter = 0
         self._total_responses = 0
 
+        # Accumulated token counters for primary (main rollout) and secondary (runahead)
+        self._total_primary_tokens_added = 0
+        self._total_secondary_tokens_added = 0
+        self._secondary_batch_counter = 0
+        self._secondary_outputs_processed = 0
+
         if config.enable:
             self._initialize_cache()
 
@@ -254,6 +260,9 @@ class SuffixTreeManager:
             # get_memory_stats may not be available in all versions
             pass
 
+        # Accumulate primary tokens added
+        self._total_primary_tokens_added += stats["suffix_tree/tokens_added"]
+
         logger.debug(
             f"Suffix tree update: processed {stats['suffix_tree/prompts_processed']} prompts, "
             f"added {stats['suffix_tree/tokens_added']} tokens"
@@ -330,6 +339,24 @@ class SuffixTreeManager:
         self._cache.add_tokens(req_id, response_array)
 
         # NOTE: We don't call stop_request() - keep trees active for speculation
+
+    def record_secondary_update(
+        self,
+        tokens_added: int,
+        outputs_processed: int,
+    ) -> None:
+        """Record statistics from a secondary (runahead) batch update.
+
+        Called by the trainer after processing secondary outputs to track
+        accumulated secondary statistics separately from primary rollout stats.
+
+        Args:
+            tokens_added: Number of tokens added from this secondary batch.
+            outputs_processed: Number of secondary outputs processed.
+        """
+        self._total_secondary_tokens_added += tokens_added
+        self._secondary_outputs_processed += outputs_processed
+        self._secondary_batch_counter += 1
 
     def get_snapshot(self) -> Tuple[List[Tuple[int, bytes]], Dict[str, int]]:
         """
@@ -467,6 +494,13 @@ class SuffixTreeManager:
         metrics = {
             "suffix_tree/total_responses": self._total_responses,
             "suffix_tree/batch_counter": self._batch_counter,
+            # Accumulated token counters (primary vs secondary)
+            "suffix_tree/total_primary_tokens_added": self._total_primary_tokens_added,
+            "suffix_tree/total_secondary_tokens_added": self._total_secondary_tokens_added,
+            "suffix_tree/total_tokens_added": self._total_primary_tokens_added + self._total_secondary_tokens_added,
+            # Secondary batch statistics
+            "suffix_tree/secondary_batch_counter": self._secondary_batch_counter,
+            "suffix_tree/secondary_outputs_processed": self._secondary_outputs_processed,
         }
 
         try:

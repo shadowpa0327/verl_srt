@@ -105,6 +105,11 @@ class SharedMemoryCacheManager:
         # Statistics
         self._total_updates = 0
         self._total_tokens_sent = 0
+        # Separate primary vs secondary statistics
+        self._total_primary_tokens = 0
+        self._total_secondary_tokens = 0
+        self._secondary_updates = 0
+        self._secondary_outputs_processed = 0
 
     def _get_routable_ip(self, server) -> str:
         """
@@ -318,6 +323,7 @@ class SharedMemoryCacheManager:
         batch_size = len(prompts)
         total_response_tokens = sum(response_lengths)
         self._total_tokens_sent += total_response_tokens
+        self._total_primary_tokens += total_response_tokens
 
         return {
             "shm_cache/update_submitted": 1,
@@ -394,6 +400,9 @@ class SharedMemoryCacheManager:
 
         total_tokens = sum(response_lengths)
         self._total_tokens_sent += total_tokens
+        self._total_secondary_tokens += total_tokens
+        self._secondary_updates += 1
+        self._secondary_outputs_processed += len(usable_outputs)
 
         return {
             "shm_cache/secondary_outputs_processed": len(usable_outputs),
@@ -423,6 +432,11 @@ class SharedMemoryCacheManager:
             "shm_cache/total_updates": self._total_updates,
             "shm_cache/total_tokens_sent": self._total_tokens_sent,
             "shm_cache/pending_futures": len(self._update_futures),
+            # Separate primary vs secondary statistics
+            "shm_cache/total_primary_tokens": self._total_primary_tokens,
+            "shm_cache/total_secondary_tokens": self._total_secondary_tokens,
+            "shm_cache/secondary_updates": self._secondary_updates,
+            "shm_cache/total_secondary_outputs_processed": self._secondary_outputs_processed,
         }
 
     def wait_for_pending_updates(self, timeout: float = 30.0):

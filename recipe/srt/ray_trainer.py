@@ -485,6 +485,12 @@ class SRTRayPPOTrainer(RayPPOTrainer):
                 )
                 tokens_added += len(response_tokens)
 
+            # Record accumulated secondary statistics
+            self.suffix_tree_manager.record_secondary_update(
+                tokens_added=tokens_added,
+                outputs_processed=len(usable_outputs),
+            )
+
             metrics["suffix_tree/secondary_outputs_processed"] = len(usable_outputs)
             metrics["suffix_tree/secondary_tokens_added"] = tokens_added
 
