@@ -70,9 +70,14 @@ public:
      *
      * @param req_ids The list of unique identifiers for the requests
      * @param prompts The list of token ID vectors representing the prompts
+     * @param pre_computed_hashes Optional list of pre-computed XXH64 hashes.
+     *        If provided and non-zero, these hashes are used instead of computing
+     *        from prompt tokens. This ensures hash consistency between secondary
+     *        cache updates and primary fetches even if tokenization differs.
      */
     void fetch_responses_by_prompts_batch(const std::vector<std::string>& req_ids,
-                                         const std::vector<std::vector<int>>& prompts);
+                                         const std::vector<std::vector<int>>& prompts,
+                                         const std::vector<uint64_t>& pre_computed_hashes = {});
 
     /**
      * Updates the speculation length for a request based on validation results.

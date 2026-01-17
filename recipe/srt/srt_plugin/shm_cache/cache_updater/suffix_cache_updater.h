@@ -33,12 +33,16 @@ public:
     ~SuffixCacheUpdater();
 
     // Update cache with multiple prompts and their corresponding responses
+    // precomputed_hashes: optional pre-computed XXH64 hashes for each unique prompt.
+    //   If provided and non-zero, these hashes are used instead of computing from prompts.
+    //   Size should be prompts.size() / responses_per_prompt.
     void update_response_cache(
         const std::vector<std::vector<int>>& prompts,
         const std::vector<std::vector<int>>& responses,
         const std::vector<float>& prompt_lengths,
         const std::vector<float>& response_lengths,
-        int responses_per_prompt);
+        int responses_per_prompt,
+        const std::vector<uint64_t>& precomputed_hashes = {});
 
 private:
     std::vector<std::string> server_addresses_;

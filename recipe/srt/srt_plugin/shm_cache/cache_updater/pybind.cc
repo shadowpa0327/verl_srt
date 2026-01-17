@@ -31,5 +31,6 @@ PYBIND11_MODULE(_C, m) {
              py::arg("prompt_lengths"),
              py::arg("response_lengths"),
              py::arg("responses_per_prompt"),
+             py::arg("precomputed_hashes") = std::vector<uint64_t>(),
              py::call_guard<py::gil_scoped_release>());
 }

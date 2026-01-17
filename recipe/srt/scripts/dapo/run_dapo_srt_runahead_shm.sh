@@ -20,26 +20,33 @@ clip_ratio_low=0.2
 clip_ratio_high=0.28
 
 max_prompt_length=$((1024 * 2))
-max_response_length=$((1024 * 8))
+max_response_length=$((1024 * 12))
 enable_overlong_buffer=True
 overlong_buffer_len=$((1024 * 4))
 overlong_penalty_factor=1.0
 
 loss_agg_mode="token-mean"
 
-train_prompt_bsz=8
+train_prompt_bsz=32
 n_resp_per_prompt=16
-train_prompt_mini_bsz=4
+train_prompt_mini_bsz=8
 
 # Ray
 NNODES=${NNODES:-1}
-NGPUS_PER_NODE=${NGPUS_PER_NODE:-2}
+NGPUS_PER_NODE=${NGPUS_PER_NODE:-4}
 # Paths
 RAY_DATA_HOME=${RAY_DATA_HOME:-"${HOME}/verl_srt"}
-MODEL_PATH=${MODEL_PATH:-"/home/ubuntu/verl_srt/Qwen2.5-Math-7B"}
+MODEL_PATH=${MODEL_PATH:-"/home/ubuntu/verl_srt/Qwen3-8B-Base"}
 CKPTS_DIR=${CKPTS_DIR:-"${RAY_DATA_HOME}/ckpts/${project_name}/${exp_name}"}
 TRAIN_FILE=${TRAIN_FILE:-"${HOME}/verl/data/dapo-math-17k.parquet"}
 TEST_FILE=${TEST_FILE:-"${HOME}/verl/data/aime-2024.parquet"}
+
+# Data dump directories (set DATA_DUMP_BASE="" to disable)
+# ROLLOUT_DATA_DIR: Directory for dumping primary rollout data (prompts, responses, scores)
+# SECONDARY_DATA_DIR: Directory for dumping secondary (runahead) data for analysis
+DATA_DUMP_BASE=${DATA_DUMP_BASE:-"/home/ubuntu/verl_srt/rollout_datas/${project_name}/${exp_name}"}
+ROLLOUT_DATA_DIR=${ROLLOUT_DATA_DIR:-"${DATA_DUMP_BASE}/rollout"}
+SECONDARY_DATA_DIR=${SECONDARY_DATA_DIR:-"${DATA_DUMP_BASE}/secondary"}
 
 # Algorithm
 temperature=1.0
@@ -54,7 +61,7 @@ actor_ppo_max_token_len=$(((max_prompt_length + max_response_length) * 2))
 infer_ppo_max_token_len=$(((max_prompt_length + max_response_length) * 3))
 offload=True
 gen_tp=1
-fsdp_size=2
+fsdp_size=4
 
 export VERL_LOGGING_LEVEL=INFO
 export RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO=0
@@ -86,6 +93,7 @@ python3 -m recipe.srt.main_ppo \
     actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=${infer_ppo_max_token_len} \
     actor_rollout_ref.rollout.name=vllm \
     actor_rollout_ref.rollout.mode=async \
+    actor_rollout_ref.rollout.disable_log_stats=False \
     actor_rollout_ref.model.path="${MODEL_PATH}" \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
     actor_rollout_ref.actor.optim.lr=1e-6 \
@@ -134,12 +142,14 @@ python3 -m recipe.srt.main_ppo \
     trainer.log_val_generations=10 \
     +trainer.enable_runahead=true \
     +trainer.runahead.load_threshold=32 \
-    +trainer.runahead.max_queue_size=256 \
+    +trainer.runahead.max_queue_size=999999 \
     +trainer.runahead.secondary_priority=10 \
     +trainer.runahead.abort_grace_s=1.0 \
     +actor_rollout_ref.rollout.enable_srt=true \
     +actor_rollout_ref.rollout.srt_cache_mode=shared_memory \
     +actor_rollout_ref.rollout.srt_max_tree_depth=32 \
     +actor_rollout_ref.rollout.srt_hash_token_count=64 \
-    +actor_rollout_ref.rollout.srt_num_speculative_tokens=16 \
+    +actor_rollout_ref.rollout.srt_num_speculative_tokens=5 \
+    trainer.rollout_data_dir="${ROLLOUT_DATA_DIR}" \
+    +trainer.secondary_data_dir="${SECONDARY_DATA_DIR}" \
     "$@"

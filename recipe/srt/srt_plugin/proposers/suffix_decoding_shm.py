@@ -54,7 +54,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# Constants matching SpecRL's defaults
+# Constants for suffix speculation
+# NOTE: Increased from SpecRL's default of 7 to match snapshot version's max_tree_depth
+# Longer patterns allow more suffix lengths to be tried, improving match success rate
 SPEC_PREFIX_LEN = 7
 MIN_TOKEN_PROB = 0.1
 
@@ -208,6 +210,8 @@ class SharedMemorySuffixDecodingProposer:
 
         # Map draft tokens back to full batch
         result = [[] for _ in sampled_token_ids]
+        total_drafts_this_batch = 0
+        non_empty_drafts = 0
         for draft_idx, batch_idx in enumerate(batch_indices):
             if draft_idx < len(drafts):
                 draft_tokens = drafts[draft_idx]
@@ -215,7 +219,9 @@ class SharedMemorySuffixDecodingProposer:
                 draft_tokens = draft_tokens[:self.num_speculative_tokens]
                 result[batch_idx] = draft_tokens
                 self._total_draft_tokens += len(draft_tokens)
-
+                total_drafts_this_batch += len(draft_tokens)
+                if draft_tokens:
+                    non_empty_drafts += 1
         self._total_proposals += 1
         return result
 

@@ -455,10 +455,18 @@ class RayPPOTrainer:
             if len(v) == n:
                 base_data[k] = v
 
+        def json_serializable(obj):
+            """Convert numpy types to Python native types for JSON serialization."""
+            if hasattr(obj, "item"):  # numpy scalar types (bool_, int64, float64, etc.)
+                return obj.item()
+            elif hasattr(obj, "tolist"):  # numpy arrays
+                return obj.tolist()
+            raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
         lines = []
         for i in range(n):
             entry = {k: v[i] for k, v in base_data.items()}
-            lines.append(json.dumps(entry, ensure_ascii=False))
+            lines.append(json.dumps(entry, ensure_ascii=False, default=json_serializable))
 
         with open(filename, "w") as f:
             f.write("\n".join(lines) + "\n")

@@ -90,7 +90,8 @@ SuffixCache::~SuffixCache() {
 
 
 void SuffixCache::fetch_responses_by_prompts_batch(const std::vector<std::string>& req_ids,
-                                                  const std::vector<std::vector<int>>& prompts) {
+                                                  const std::vector<std::vector<int>>& prompts,
+                                                  const std::vector<uint64_t>& pre_computed_hashes) {
     if (req_ids.size() != prompts.size()) {
         std::cerr << "Error: req_ids and prompts size mismatch" << std::endl;
         return;
@@ -107,7 +108,14 @@ void SuffixCache::fetch_responses_by_prompts_batch(const std::vector<std::string
         // Check if we already have responses for this request
         if (req_id_to_responses_.find(req_id) == req_id_to_responses_.end()) {
             req_id_to_spec_len_[req_id] = spec_start_len_;
-            uint64_t req_hash = XXH64(prompt.data(), prompt.size() * sizeof(int), 0);
+
+            // Use pre-computed hash if provided and non-zero, otherwise compute from prompt
+            uint64_t req_hash;
+            if (i < pre_computed_hashes.size() && pre_computed_hashes[i] != 0) {
+                req_hash = pre_computed_hashes[i];
+            } else {
+                req_hash = XXH64(prompt.data(), prompt.size() * sizeof(int), 0);
+            }
             req_hashes.push_back(req_hash);
             indices_to_process.push_back(i);
         }

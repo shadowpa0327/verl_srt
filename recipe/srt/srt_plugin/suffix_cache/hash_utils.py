@@ -24,6 +24,34 @@ from typing import Sequence, Union
 import numpy as np
 
 
+def compute_prompt_hash_xxh64(prompt_tokens: Sequence[int]) -> int:
+    """Compute XXH64 hash matching C++ SHM cache implementation.
+
+    This function produces the same hash as the C++ SuffixCache::compute_prompt_hash()
+    method, which uses: XXH64(prompt.data(), prompt.size() * sizeof(int), 0)
+
+    Args:
+        prompt_tokens: Full prompt token sequence (list of ints).
+
+    Returns:
+        uint64 integer (not hex string like snapshot mode's compute_prompt_hash).
+
+    Example:
+        >>> from recipe.srt.srt_plugin.suffix_cache import compute_prompt_hash_xxh64
+        >>> tokens = [1, 2, 3, 4, 5]
+        >>> hash_value = compute_prompt_hash_xxh64(tokens)
+        >>> print(hex(hash_value))  # e.g., "0xa1b2c3d4e5f6g7h8"
+    """
+    import struct
+
+    import xxhash
+
+    # Convert to bytes exactly as C++ does: array of 4-byte signed ints
+    # C++: XXH64(prompt.data(), prompt.size() * sizeof(int), 0)
+    token_bytes = struct.pack(f'{len(prompt_tokens)}i', *prompt_tokens)
+    return xxhash.xxh64(token_bytes).intdigest()
+
+
 def compute_prompt_hash(
     prompt_tokens: Union[np.ndarray, Sequence[int]],
     hash_token_count: int = 128,

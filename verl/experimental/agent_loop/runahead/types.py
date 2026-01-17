@@ -31,6 +31,7 @@ class SecondaryOutput:
         status: Current status of the secondary request.
         tokens_generated: Number of tokens generated (partial if aborted).
         prompt_ids: Original prompt token IDs (for suffix tree updates).
+        prompt_hash: Pre-computed XXH64 hash for cache updates (SHM mode).
     """
 
     sample_id: str
@@ -38,6 +39,7 @@ class SecondaryOutput:
     status: Literal["completed", "aborted", "rejected", "pending"] = "pending"
     tokens_generated: int = 0
     prompt_ids: list[int] = field(default_factory=list)
+    prompt_hash: int = 0  # Pre-computed hash for cache updates
 
 
 @dataclass

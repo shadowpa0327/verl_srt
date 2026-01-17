@@ -294,6 +294,35 @@ class SharedMemoryCacheManager:
         prompts = batch.batch["prompts"].tolist()
         responses = batch.batch["responses"].tolist()
 
+        # Debug: Show what we're sending for primary update
+        num_unique_prompts = len(prompts) // responses_per_prompt
+
+        # Get pre-computed hashes if available (computed at dataset level)
+        precomputed_hashes_raw = batch.non_tensor_batch.get("prompt_hash")
+        if precomputed_hashes_raw is not None:
+            # Extract one hash per unique prompt (every responses_per_prompt samples)
+            if hasattr(precomputed_hashes_raw, 'tolist'):
+                all_hashes = precomputed_hashes_raw.tolist()
+            else:
+                all_hashes = list(precomputed_hashes_raw)
+            # Take every responses_per_prompt-th hash since prompts are duplicated
+            precomputed_hashes = [all_hashes[i * responses_per_prompt] for i in range(num_unique_prompts)]
+        else:
+            # Fallback: no pre-computed hashes (C++ will compute)
+            precomputed_hashes = []
+
+        # Debug: Compute hash for first prompt (same logic as C++ side)
+        if prompts and prompt_lengths:
+            import xxhash
+            import struct
+            first_prompt = prompts[0]
+            first_prompt_len = int(prompt_lengths[0])
+            # C++ hashes last prompt_len tokens (for left-padded data)
+            actual_tokens = first_prompt[-first_prompt_len:] if first_prompt_len <= len(first_prompt) else first_prompt
+            # Convert to bytes exactly as C++ does: array of 4-byte ints
+            token_bytes = struct.pack(f'{len(actual_tokens)}i', *actual_tokens)
+            prompt_hash = xxhash.xxh64(token_bytes).intdigest()
+
         # Limit concurrent futures to prevent memory overflow
         if len(self._update_futures) >= self._max_futures:
             oldest_future = self._update_futures.pop(0)
@@ -310,6 +339,7 @@ class SharedMemoryCacheManager:
             prompt_lengths=prompt_lengths,
             response_lengths=response_lengths,
             responses_per_prompt=responses_per_prompt,
+            precomputed_hashes=precomputed_hashes,  # Use pre-computed hashes from dataset
         )
         self._update_futures.append(future)
 
@@ -333,16 +363,20 @@ class SharedMemoryCacheManager:
         """
         Update cache with secondary (runahead) outputs.
 
-        Similar to update_from_rollout but handles SecondaryOutput format
-        from runahead generation.
+        Each SecondaryOutput is an independent prompt-response pair, so this
+        method always uses responses_per_prompt=1 internally regardless of
+        the parameter passed (kept for API compatibility).
 
         Args:
             secondary_outputs: List of SecondaryOutput from runahead.
-            responses_per_prompt: Number of responses generated per prompt.
+            responses_per_prompt: Ignored. Each secondary output is treated
+                as an independent prompt-response pair.
 
         Returns:
             Dict with update statistics.
         """
+        # Note: responses_per_prompt parameter is ignored for secondary outputs.
+        # Each SecondaryOutput is a single prompt-response pair.
         if not self._enabled:
             return {}
 
@@ -355,6 +389,11 @@ class SharedMemoryCacheManager:
             and len(out.prompt_ids) > 0
         ]
 
+        # Debug: Show filtering results
+        status_counts = {}
+        for out in secondary_outputs:
+            status_counts[out.status] = status_counts.get(out.status, 0) + 1
+
         if not usable_outputs:
             return {"shm_cache/secondary_skipped": 1}
 
@@ -363,6 +402,12 @@ class SharedMemoryCacheManager:
         responses = []
         prompt_lengths = []
         response_lengths = []
+
+        # Debug: Track unique prompts
+        unique_prompt_hashes = set()
+
+        # Collect pre-computed hashes from SecondaryOutput
+        precomputed_hashes = []
 
         for out in usable_outputs:
             prompt_tokens = list(out.prompt_ids)
@@ -373,6 +418,20 @@ class SharedMemoryCacheManager:
             prompt_lengths.append(float(len(prompt_tokens)))
             response_lengths.append(float(len(response_tokens)))
 
+            # Use pre-computed hash from SecondaryOutput if available
+            if out.prompt_hash != 0:
+                precomputed_hashes.append(out.prompt_hash)
+                unique_prompt_hashes.add(out.prompt_hash)
+            else:
+                # Fallback: Compute hash for logging (same as C++ side)
+                import xxhash
+                import struct
+                # C++ hashes raw int bytes: XXH64(prompt.data(), prompt.size() * sizeof(int), 0)
+                token_bytes = struct.pack(f'{len(prompt_tokens)}i', *prompt_tokens)
+                prompt_hash = xxhash.xxh64(token_bytes).intdigest()
+                precomputed_hashes.append(prompt_hash)
+                unique_prompt_hashes.add(prompt_hash)
+
         # Limit concurrent futures
         if len(self._update_futures) >= self._max_futures:
             oldest_future = self._update_futures.pop(0)
@@ -382,13 +441,17 @@ class SharedMemoryCacheManager:
                 logger.warning(f"Secondary cache update future failed: {e}")
 
         # Submit async cache update
+        # IMPORTANT: Always use responses_per_prompt=1 for secondary outputs
+        # because each SecondaryOutput is an independent prompt-response pair,
+        # unlike the main rollout batch where prompts are duplicated for each response.
         future = self._executor.submit(
             self._cache_updater.update_response_cache,
             prompts=prompts,
             responses=responses,
             prompt_lengths=prompt_lengths,
             response_lengths=response_lengths,
-            responses_per_prompt=responses_per_prompt,
+            responses_per_prompt=1,  # Each secondary output is independent
+            precomputed_hashes=precomputed_hashes,  # Use pre-computed hashes from SecondaryOutput
         )
         self._update_futures.append(future)
 

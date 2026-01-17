@@ -47,6 +47,9 @@ PYBIND11_MODULE(_C, m) {
              "    spec_start_len: Initial/minimum speculation length (default: 2).\n"
              "    spec_max_len: Maximum speculation length (default: 16).")
         .def("fetch_responses_by_prompts_batch", &SuffixCache::fetch_responses_by_prompts_batch,
+             py::arg("req_ids"),
+             py::arg("prompts"),
+             py::arg("pre_computed_hashes") = std::vector<uint64_t>(),
              py::call_guard<py::gil_scoped_release>())
         .def("update_spec_len", &SuffixCache::update_spec_len,
              py::call_guard<py::gil_scoped_release>())

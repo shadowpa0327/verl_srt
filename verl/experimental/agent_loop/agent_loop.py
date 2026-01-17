@@ -232,6 +232,51 @@ class AgentLoopWorkerBase:
             trace_config.get("max_samples_per_step_per_worker", None),
         )
 
+    def _compute_prompt_hashes_for_batch(self, batch: DataProto) -> list[int]:
+        """Get or compute XXH64 prompt hashes for SHM mode cache consistency.
+
+        This ensures primary requests use the same hash as when they were secondary,
+        enabling cache hits even if vLLM's internal prompt_token_ids differs slightly.
+
+        Args:
+            batch: DataProto containing raw_prompt in non_tensor_batch.
+
+        Returns:
+            List of hash values (uint64), one per sample. 0 means hash could not be computed.
+        """
+        # First, check if pre-computed hashes are available (computed at dataset level)
+        precomputed = batch.non_tensor_batch.get("prompt_hash")
+        if precomputed is not None:
+            # Convert numpy array to list
+            if hasattr(precomputed, 'tolist'):
+                return precomputed.tolist()
+            return list(precomputed)
+
+        # Fallback: compute hashes (for backward compatibility)
+        raw_prompts = batch.non_tensor_batch.get("raw_prompt")
+        if raw_prompts is None:
+            return [0] * len(batch)
+
+        try:
+            from recipe.srt.srt_plugin.suffix_cache.hash_utils import compute_prompt_hash_xxh64
+        except ImportError:
+            return [0] * len(batch)
+
+        # Tokenize using same logic as _build_secondary_work_items for consistency
+        apply_chat_template_kwargs = self.config.data.get("apply_chat_template_kwargs", {})
+        hashes = []
+
+        for messages in raw_prompts:
+            try:
+                token_ids = self.tokenizer.apply_chat_template(
+                    messages, add_generation_prompt=True, tokenize=True, **apply_chat_template_kwargs
+                )
+                hashes.append(compute_prompt_hash_xxh64(token_ids))
+            except Exception:
+                hashes.append(0)
+
+        return hashes
+
     @tqbridge()
     async def generate_sequences(self, batch: DataProto) -> DataProto:
         """Generate sequences from agent loop.
@@ -297,13 +342,24 @@ class AgentLoopWorkerBase:
             batch.meta_info.get("global_steps", -1), index.tolist(), batch.meta_info.get("validate", False)
         )
 
+        # Pre-compute prompt hashes for SHM mode cache consistency
+        # This ensures primary requests use the same hash as when they were secondary
+        prompt_hashes = self._compute_prompt_hashes_for_batch(batch)
+
         tasks = []
         for i in range(len(batch)):
             trace_this_sample = i in traced_indices
             kwargs = {k: v[i] for k, v in batch.non_tensor_batch.items()}
+
+            # Create per-sample sampling_params with injected hash
+            sample_sampling_params = dict(sampling_params)
+            if i < len(prompt_hashes) and prompt_hashes[i] != 0:
+                sample_sampling_params["extra_args"] = sample_sampling_params.get("extra_args", {})
+                sample_sampling_params["extra_args"]["prompt_hash"] = prompt_hashes[i]
+
             tasks.append(
                 asyncio.create_task(
-                    self._run_agent_loop(sampling_params, trajectory_info[i], trace=trace_this_sample, **kwargs)
+                    self._run_agent_loop(sample_sampling_params, trajectory_info[i], trace=trace_this_sample, **kwargs)
                 )
             )
         outputs = await asyncio.gather(*tasks)
@@ -885,38 +941,79 @@ class AgentLoopManager:
 
         work_items: list[SecondaryWorkItem] = []
 
-        # === Try pre-tokenized format first ===
+        # === PREFER raw_prompt tokenization to match primary generation path ===
+        # This ensures secondary work items use the same tokenization as primary,
+        # which is critical for SRT cache hash matching. The primary path uses
+        # tokenizer.apply_chat_template() on raw_prompt, so we must do the same.
         secondary_prompt_batch = None
         secondary_attention_mask = None
         use_tokenized = False
 
-        if secondary_prompts.batch is not None:
-            secondary_prompt_batch = secondary_prompts.batch.get("input_ids")
+        raw_prompts = secondary_prompts.non_tensor_batch.get("raw_prompt")
+        batch_keys = list(secondary_prompts.batch.keys()) if secondary_prompts.batch is not None else None
+
+        # Check for pre-computed hashes first (computed at dataset level for consistency)
+        precomputed_hashes = secondary_prompts.non_tensor_batch.get("prompt_hash")
+        if precomputed_hashes is not None:
+            if hasattr(precomputed_hashes, 'tolist'):
+                prompt_hashes = precomputed_hashes.tolist()
+            else:
+                prompt_hashes = list(precomputed_hashes)
+        else:
+            # Will compute hashes during tokenization if needed
+            prompt_hashes = []
+
+        if raw_prompts is not None:
+            # Tokenize using chat template (same as primary generation path)
+            # Include apply_chat_template_kwargs to match the primary tokenization exactly
+            apply_chat_template_kwargs = self.config.data.get("apply_chat_template_kwargs", {})
+            prompt_ids_list = []
+            for i, messages in enumerate(raw_prompts):
+                token_ids = self.tokenizer.apply_chat_template(
+                    messages, add_generation_prompt=True, tokenize=True, **apply_chat_template_kwargs
+                )
+                prompt_ids_list.append(token_ids)
+
+                # If no pre-computed hash, compute XXH64 hash for SHM mode
+                if i >= len(prompt_hashes) or prompt_hashes[i] == 0:
+                    try:
+                        from recipe.srt.srt_plugin.suffix_cache.hash_utils import compute_prompt_hash_xxh64
+                        computed_hash = compute_prompt_hash_xxh64(token_ids)
+                        if i < len(prompt_hashes):
+                            prompt_hashes[i] = computed_hash
+                        else:
+                            prompt_hashes.append(computed_hash)
+                    except ImportError:
+                        if i >= len(prompt_hashes):
+                            prompt_hashes.append(0)  # Fallback: let C++ compute hash
+
+            secondary_prompt_batch = prompt_ids_list
+            use_tokenized = False  # prompt_ids_list contains lists, not tensors
+            if prompt_ids_list:
+                first_tokens = prompt_ids_list[0]
+                # Compute batch hash from all prompt lengths to uniquely identify this batch
+                import xxhash
+                batch_signature = tuple(len(p) for p in prompt_ids_list)
+                batch_hash = xxhash.xxh64(str(batch_signature).encode()).hexdigest()[:8]
+                print(f"[SHM_DEBUG] Tokenized {len(prompt_ids_list)} secondary prompts from raw_prompt, "
+                      f"BATCH_HASH={batch_hash}, "
+                      f"first prompt len={len(first_tokens)}, "
+                      f"FIRST 20 tokens: {first_tokens[:20]}, "
+                      f"LAST 10 tokens: {first_tokens[-10:]}")
+        else:
+            # Fallback: use pre-tokenized batch data (may have different lengths)
+            secondary_prompt_batch = secondary_prompts.batch.get("input_ids") if secondary_prompts.batch is not None else None
             if secondary_prompt_batch is None:
                 secondary_prompt_batch = secondary_prompts.batch.get("prompts")
             if secondary_prompt_batch is not None:
                 use_tokenized = True
                 secondary_attention_mask = secondary_prompts.batch.get("attention_mask")
 
-        # === Fallback: tokenize raw_prompt ===
-        if not use_tokenized:
-            raw_prompts = secondary_prompts.non_tensor_batch.get("raw_prompt")
-            if raw_prompts is None:
-                raise ValueError(
-                    "secondary_prompts must contain either batch['input_ids'], "
-                    "batch['prompts'], or non_tensor_batch['raw_prompt']"
-                )
-
-            # Tokenize each prompt using chat template
-            prompt_ids_list = []
-            for messages in raw_prompts:
-                token_ids = self.tokenizer.apply_chat_template(
-                    messages, add_generation_prompt=True, tokenize=True
-                )
-                prompt_ids_list.append(token_ids)
-
-            # Store as list (no tensor needed since we iterate per-sample)
-            secondary_prompt_batch = prompt_ids_list
+        if secondary_prompt_batch is None:
+            raise ValueError(
+                "secondary_prompts must contain either non_tensor_batch['raw_prompt'], "
+                "batch['input_ids'], or batch['prompts']"
+            )
 
         # === Extract optional metadata ===
         secondary_sampling_params = secondary_prompts.non_tensor_batch.get("sampling_params")
@@ -970,6 +1067,14 @@ class AgentLoopManager:
                         sampling_params["seed"] = int(seed_value)
                 except Exception:
                     pass
+
+            # Inject pre-computed hash for SHM mode consistency
+            # This ensures the hash used when the prompt becomes primary
+            # matches the hash used when caching secondary outputs.
+            if i < len(prompt_hashes) and prompt_hashes[i] != 0:
+                if "extra_args" not in sampling_params:
+                    sampling_params["extra_args"] = {}
+                sampling_params["extra_args"]["prompt_hash"] = prompt_hashes[i]
 
             work_item = SecondaryWorkItem(
                 sample_id=sample_id,

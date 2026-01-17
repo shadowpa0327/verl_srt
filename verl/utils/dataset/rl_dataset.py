@@ -417,6 +417,22 @@ class RLHFDataset(Dataset):
         row_dict["position_ids"] = position_ids[0]
 
         raw_prompt_ids = self.tokenizer.encode(raw_prompt, add_special_tokens=False)
+
+        # Compute hash for SHM mode consistency using the same tokenization path as vLLM
+        # This ensures hash matches between UPDATE (from here) and FETCH (from vLLM)
+        try:
+            # Tokenize with chat template (same as vLLM primary/secondary path)
+            prompt_token_ids = self.tokenizer.apply_chat_template(
+                messages, add_generation_prompt=True, tokenize=True,
+                **self.apply_chat_template_kwargs
+            )
+            from recipe.srt.srt_plugin.suffix_cache.hash_utils import compute_prompt_hash_xxh64
+            row_dict["prompt_hash"] = compute_prompt_hash_xxh64(prompt_token_ids)
+        except ImportError:
+            row_dict["prompt_hash"] = 0
+        except Exception:
+            row_dict["prompt_hash"] = 0
+
         if len(raw_prompt_ids) > self.max_prompt_length:
             if self.truncation == "left":
                 raw_prompt_ids = raw_prompt_ids[-self.max_prompt_length :]

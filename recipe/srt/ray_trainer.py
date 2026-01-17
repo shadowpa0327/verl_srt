@@ -181,7 +181,7 @@ class SRTRayPPOTrainer(RayPPOTrainer):
                 "memory_size_gb": shm_config.get("memory_size_gb", 100),
                 "shared_memory_name": shm_config.get("shared_memory_name", ""),  # Empty = default "SUFFIX_CACHE"
                 "spec_start_len": shm_config.get("spec_start_len", 2),  # Initial/min speculation length
-                "spec_max_len": shm_config.get("spec_max_len", 16),  # Maximum speculation length
+                "spec_max_len": shm_config.get("spec_max_len", 8),  # Maximum speculation length
             },
         }
 
@@ -417,6 +417,9 @@ class SRTRayPPOTrainer(RayPPOTrainer):
         if self.shm_cache_manager is not None:
             with marked_timer("update_cache_shm", timing_raw):
                 responses_per_prompt = self.config.actor_rollout_ref.rollout.n
+                print("Updating shared memory cache from rollout...")
+                print(f"Batch size: {len(batch.batch['input_ids']) // responses_per_prompt} prompts, "
+                      f"{responses_per_prompt} responses per prompt")
                 stats = self.shm_cache_manager.update_from_rollout(batch, responses_per_prompt)
                 metrics.update(stats)
             return
@@ -450,9 +453,18 @@ class SRTRayPPOTrainer(RayPPOTrainer):
         # Shared memory mode: use SharedMemoryCacheManager
         if self.shm_cache_manager is not None:
             with marked_timer("update_cache_shm_secondary", timing_raw):
-                responses_per_prompt = self.config.actor_rollout_ref.rollout.n
+                # Count usable outputs for logging
+                usable_count = sum(
+                    1 for out in secondary_outputs
+                    if out.status in ("completed", "aborted")
+                    and out.output is not None
+                    and len(getattr(out.output, "token_ids", [])) > 0
+                    and len(out.prompt_ids) > 0
+                )
+                print(f"SRT: Updating cache from {usable_count}/{len(secondary_outputs)} "
+                      f"secondary outputs (completed/aborted with tokens)")
                 stats = self.shm_cache_manager.update_from_secondary(
-                    secondary_outputs, responses_per_prompt
+                    secondary_outputs, responses_per_prompt=1  # Each output is independent
                 )
                 metrics.update(stats)
             return
@@ -487,6 +499,74 @@ class SRTRayPPOTrainer(RayPPOTrainer):
 
             metrics["suffix_tree/secondary_outputs_processed"] = len(usable_outputs)
             metrics["suffix_tree/secondary_tokens_added"] = tokens_added
+
+    def _log_secondary_data(
+        self,
+        secondary_outputs: list,
+        timing_raw: dict,
+        secondary_data_dir: str,
+    ) -> None:
+        """Log secondary (runahead) data to disk for later analysis.
+
+        Stores secondary outputs in JSONL format, similar to _log_rollout_data but
+        with additional fields specific to runahead (status, tokens_generated, etc.).
+
+        Args:
+            secondary_outputs: List of SecondaryOutput from runahead.
+            timing_raw: Timing dict for profiling.
+            secondary_data_dir: Directory path to save the secondary data.
+        """
+        import json
+
+        def json_serializable(obj):
+            """Convert numpy types to Python native types for JSON serialization."""
+            if hasattr(obj, "item"):  # numpy scalar types (bool_, int64, float64, etc.)
+                return obj.item()
+            elif hasattr(obj, "tolist"):  # numpy arrays
+                return obj.tolist()
+            raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+        with marked_timer("dump_secondary_generations", timing_raw, color="green"):
+            os.makedirs(secondary_data_dir, exist_ok=True)
+            filename = os.path.join(secondary_data_dir, f"{self.global_steps}.jsonl")
+
+            lines = []
+            for out in secondary_outputs:
+                entry = {
+                    "sample_id": out.sample_id,
+                    "status": out.status,
+                    "tokens_generated": out.tokens_generated,
+                    "prompt_hash": out.prompt_hash,
+                    "step": self.global_steps,
+                }
+
+                # Decode prompt if available
+                if out.prompt_ids:
+                    entry["prompt"] = self.tokenizer.decode(out.prompt_ids, skip_special_tokens=True)
+                    entry["prompt_length"] = len(out.prompt_ids)
+
+                # Decode response if available
+                if out.output is not None and hasattr(out.output, "token_ids") and out.output.token_ids:
+                    entry["response"] = self.tokenizer.decode(out.output.token_ids, skip_special_tokens=True)
+                    entry["response_length"] = len(out.output.token_ids)
+                    entry["stop_reason"] = out.output.stop_reason
+                    # Include log_probs if available (can be useful for analysis)
+                    if out.output.log_probs is not None:
+                        entry["mean_log_prob"] = sum(out.output.log_probs) / len(out.output.log_probs)
+                else:
+                    entry["response"] = ""
+                    entry["response_length"] = 0
+                    entry["stop_reason"] = None
+
+                # Mark if this is a partial (aborted) generation
+                entry["is_partial"] = out.status == "aborted"
+
+                lines.append(json.dumps(entry, ensure_ascii=False, default=json_serializable))
+
+            with open(filename, "w") as f:
+                f.write("\n".join(lines) + "\n")
+
+            print(f"Dumped {len(secondary_outputs)} secondary generations to {filename}")
 
     def _validate(self):
         """Override _validate to update suffix trees with validation data."""
@@ -1224,6 +1304,13 @@ class SRTRayPPOTrainer(RayPPOTrainer):
                             self._update_suffix_trees_from_secondary(
                                 result.secondary_outputs, metrics, timing_raw
                             )
+
+                            # Log secondary data if configured
+                            secondary_data_dir = self.config.trainer.get("secondary_data_dir", None)
+                            if secondary_data_dir and result.secondary_outputs:
+                                self._log_secondary_data(
+                                    result.secondary_outputs, timing_raw, secondary_data_dir
+                                )
                         else:
                             # Last batch - no secondary available
                             gen_batch_output = self.async_rollout_manager.generate_sequences(primary_prompts)

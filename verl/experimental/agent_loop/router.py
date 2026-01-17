@@ -945,11 +945,13 @@ class RunaheadCentralRouter:
             if len(self._pending_queue) >= max_queue_size:
                 # Drop oldest item
                 dropped = self._pending_queue.popleft()
+                dropped_hash = self._extract_prompt_hash(dropped)
                 self._batch_results.append(SecondaryOutput(
                     sample_id=dropped.sample_id,
                     output=None,
                     status="rejected",
                     tokens_generated=0,
+                    prompt_hash=dropped_hash,
                 ))
                 self._batch_metrics.secondary_rejected += 1
             self._pending_queue.append(item)
@@ -1012,11 +1014,13 @@ class RunaheadCentralRouter:
         # 3. Drop all pending items
         while self._pending_queue:
             item = self._pending_queue.popleft()
+            item_hash = self._extract_prompt_hash(item)
             self._batch_results.append(SecondaryOutput(
                 sample_id=item.sample_id,
                 output=None,
                 status="rejected",
                 tokens_generated=0,
+                prompt_hash=item_hash,
             ))
             self._batch_metrics.secondary_rejected += 1
 
@@ -1064,6 +1068,7 @@ class RunaheadCentralRouter:
         # 5. Any remaining in-flight items that weren't already collected, mark as aborted.
         # Note: _execute_secondary may have already added results during the grace period,
         # so we check for existing sample_ids to avoid double-counting.
+        # Aborted items won't be used for cache updates, so prompt_hash=0 is acceptable.
         existing_sample_ids = {o.sample_id for o in self._batch_results}
         for sample_id, (task, server_idx, server_request_id) in list(self._in_flight_batch.items()):
             if sample_id not in existing_sample_ids:
@@ -1072,6 +1077,7 @@ class RunaheadCentralRouter:
                     output=None,
                     status="aborted",
                     tokens_generated=0,
+                    prompt_hash=0,  # Aborted items don't need hash for cache updates
                 ))
                 self._batch_metrics.secondary_aborted += 1
         self._in_flight_batch.clear()
@@ -1191,6 +1197,13 @@ class RunaheadCentralRouter:
         except Exception:
             logger.exception("RunaheadCentralRouter admit loop failed")
 
+    def _extract_prompt_hash(self, work_item: SecondaryWorkItem) -> int:
+        """Extract pre-computed prompt_hash from work item's sampling_params."""
+        extra_args = work_item.sampling_params.get("extra_args", {})
+        if extra_args:
+            return extra_args.get("prompt_hash", 0)
+        return 0
+
     async def _execute_secondary(
         self,
         work_item: SecondaryWorkItem,
@@ -1218,6 +1231,9 @@ class RunaheadCentralRouter:
         self.server_load[server_idx] += 1
         self._secondary_load[server_idx] += 1
 
+        # Extract pre-computed hash for cache updates
+        prompt_hash = self._extract_prompt_hash(work_item)
+
         try:
             server = self.server_handles[server_idx]
             output = await server.generate.remote(
@@ -1239,6 +1255,7 @@ class RunaheadCentralRouter:
                         status="aborted",
                         tokens_generated=tokens_generated,
                         prompt_ids=work_item.prompt_ids,
+                        prompt_hash=prompt_hash,
                     ))
                     self._batch_metrics.secondary_aborted += 1
                     self.secondary_aborted += 1
@@ -1249,11 +1266,12 @@ class RunaheadCentralRouter:
                         status="completed",
                         tokens_generated=tokens_generated,
                         prompt_ids=work_item.prompt_ids,
+                        prompt_hash=prompt_hash,
                     ))
                     self._batch_metrics.secondary_completed += 1
             else:
                 # Should not happen with router-owned queue, but handle gracefully
-                self._handle_failure(work_item)
+                self._handle_failure(work_item, prompt_hash)
 
         except asyncio.CancelledError:
             # Aborted by stop_runahead_batch - don't add to results here,
@@ -1262,7 +1280,7 @@ class RunaheadCentralRouter:
 
         except Exception as e:
             logger.warning(f"Secondary {work_item.sample_id} failed: {e}")
-            self._handle_failure(work_item)
+            self._handle_failure(work_item, prompt_hash)
 
         finally:
             self.server_load[server_idx] -= 1
@@ -1294,13 +1312,14 @@ class RunaheadCentralRouter:
         for sample_id in completed_sample_ids:
             self._in_flight_batch.pop(sample_id, None)
 
-    def _handle_failure(self, work_item: SecondaryWorkItem) -> None:
+    def _handle_failure(self, work_item: SecondaryWorkItem, prompt_hash: int = 0) -> None:
         """Handle a failed item (no retries - queue model prevents capacity rejection)."""
         self._batch_results.append(SecondaryOutput(
             sample_id=work_item.sample_id,
             output=None,
             status="rejected",
             tokens_generated=0,
+            prompt_hash=prompt_hash,
         ))
         self._batch_metrics.secondary_rejected += 1
         self.secondary_rejected += 1

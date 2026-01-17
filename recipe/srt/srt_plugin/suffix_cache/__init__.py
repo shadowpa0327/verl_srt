@@ -22,7 +22,7 @@ enabling efficient draft token generation without a separate draft model.
 """
 
 from .cache import SuffixDecodingCache, SuffixDecodingDraft
-from .hash_utils import compute_prompt_hash
+from .hash_utils import compute_prompt_hash, compute_prompt_hash_xxh64
 
 # Try to import ParallelSuffixDecodingCache - requires SuffixForest C++ extension
 try:
@@ -65,7 +65,7 @@ except ImportError:
     _has_snapshot = False
 
 # Build __all__ based on available features
-__all__ = ["SuffixDecodingCache", "SuffixDecodingDraft", "compute_prompt_hash"]
+__all__ = ["SuffixDecodingCache", "SuffixDecodingDraft", "compute_prompt_hash", "compute_prompt_hash_xxh64"]
 if _has_parallel:
     __all__.append("ParallelSuffixDecodingCache")
 if _has_snapshot:

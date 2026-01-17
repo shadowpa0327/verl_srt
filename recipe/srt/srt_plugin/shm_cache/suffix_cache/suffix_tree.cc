@@ -140,24 +140,36 @@ Candidate SuffixTree::speculate(const std::vector<int>& pattern,
                                 int max_spec_tokens,
                                 float min_token_prob,
                                 bool use_tree_spec) {
-    Candidate result;
-    // Try all starting points in the pattern
-    for (int start_idx = 0; start_idx < static_cast<int>(pattern.size()) - 3; start_idx++) {
+    Candidate best_candidate;
+    int pattern_size = static_cast<int>(pattern.size());
+
+    // Match snapshot version's algorithm: iterate over suffix lengths
+    // Try pattern[-1:], pattern[-2:], ..., pattern[-(n-1):]
+    // This matches how the snapshot version loops over match_len
+    for (int match_len = 1; match_len < pattern_size; match_len++) {
+        // Extract suffix: last match_len tokens of pattern
+        int start_idx = pattern_size - match_len;
         auto[node, idx] = _match_pattern(pattern, start_idx);
         if (node == nullptr) {
+            // Unlike snapshot which breaks, we continue to try shorter suffixes
+            // since _match_pattern requires full suffix match
             continue;
         }
-        // int match_len = static_cast<int>(pattern.size()) - start_idx;
+
         Candidate candidate;
         if (use_tree_spec) {
             candidate = _speculate_tree(node, idx, max_spec_tokens, min_token_prob);
         } else {
             candidate = _speculate_path(node, idx, max_spec_tokens, min_token_prob);
         }
-        if (candidate.score)
-            return candidate;  // Early return if we found a valid candidate
+
+        // Keep best candidate (like snapshot version)
+        if (candidate.score >= best_candidate.score) {
+            best_candidate = std::move(candidate);
+            best_candidate.match_len = match_len;
+        }
     }
-    return result;
+    return best_candidate;
 }
 
 std::pair<NodePtr, int> SuffixTree::_match_pattern(

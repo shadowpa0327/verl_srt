@@ -84,7 +84,8 @@ void SuffixCacheUpdater::update_response_cache(
     const std::vector<std::vector<int>>& responses,
     const std::vector<float>& prompt_lengths,
     const std::vector<float>& response_lengths,
-    int responses_per_prompt) {
+    int responses_per_prompt,
+    const std::vector<uint64_t>& precomputed_hashes) {
 
     // Calculate number of prompts based on total responses and responses per prompt
     int prompts_num = responses.size() / responses_per_prompt;
@@ -108,9 +109,18 @@ void SuffixCacheUpdater::update_response_cache(
             prompt_len = static_cast<int>(prompt.size());
         }
 
-        const int* token_data = prompt.data() + (prompt.size() - prompt_len);
-        size_t bytes_size = prompt_len * sizeof(int);
-        uint64_t hash = XXH64(token_data, bytes_size, 0);
+        // Use pre-computed hash if provided and non-zero, otherwise compute
+        uint64_t hash;
+        if (!precomputed_hashes.empty() &&
+            static_cast<size_t>(i) < precomputed_hashes.size() &&
+            precomputed_hashes[i] != 0) {
+            hash = precomputed_hashes[i];
+        } else {
+            // Compute hash from prompt tokens (same as C++ SuffixCache)
+            const int* token_data = prompt.data() + (prompt.size() - prompt_len);
+            size_t bytes_size = prompt_len * sizeof(int);
+            hash = XXH64(token_data, bytes_size, 0);
+        }
 
         request.set_prompt_hash(hash);
 

@@ -300,7 +300,28 @@ def apply_patches():
                     def fetch_suffix_responses():
                         req_ids = [r.req_id for r in scheduler_output.scheduled_new_reqs]
                         prompts = [r.prompt_token_ids for r in scheduler_output.scheduled_new_reqs]
-                        self._suffix_cache.fetch_responses_by_prompts_batch(req_ids, prompts)
+
+                        # Extract pre-computed hashes from sampling_params.extra_args
+                        # This ensures hash consistency between secondary cache updates
+                        # (which use prompt_ids from tokenization) and primary fetches.
+                        pre_computed_hashes = []
+                        for r in scheduler_output.scheduled_new_reqs:
+                            hash_val = 0
+                            if hasattr(r, 'sampling_params') and r.sampling_params:
+                                extra_args = getattr(r.sampling_params, 'extra_args', None)
+                                if extra_args:
+                                    prompt_hash = extra_args.get("prompt_hash")
+                                    if prompt_hash is not None:
+                                        # Handle both int and hex string formats
+                                        if isinstance(prompt_hash, str):
+                                            hash_val = int(prompt_hash, 16) if prompt_hash else 0
+                                        else:
+                                            hash_val = int(prompt_hash)
+                            pre_computed_hashes.append(hash_val)
+
+                        self._suffix_cache.fetch_responses_by_prompts_batch(
+                            req_ids, prompts, pre_computed_hashes
+                        )
                         return 1
 
                     self._fetch_future = self._cache_updater.submit(fetch_suffix_responses)
