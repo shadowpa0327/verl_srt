@@ -337,10 +337,13 @@ See `test_vllm_runahead_server_side_admission_prototype.py` for reference implem
 
 ## References
 
-### Test Files (Prototypes)
-- `tests/workers/rollout/rollout_vllm/test_vllm_runahead_agentloop_standalone.py` - AgentLoop integration prototype
-- `tests/workers/rollout/rollout_vllm/test_vllm_runahead_server_side_admission_prototype.py` - **V3.1 server-side admission (current)**
-- `tests/workers/rollout/rollout_vllm/test_vllm_runahead_slack_filling.py` - Continuous slack-filling pattern
+### Test Files
+- `tests/workers/rollout/rollout_vllm/test_vllm_runahead_manager_busy_loop_standalone.py` - Manager busy loop test
+- `tests/workers/rollout/rollout_vllm/test_runahead_suffix_effectiveness.py` - Runahead + suffix cache integration
+- `tests/workers/rollout/rollout_vllm/benchmark_agentloop_runahead.py` - Runahead benchmarking
 
 ### Implementation
-- `verl/experimental/agent_loop/runahead.py` - V0 implementation (needs update)
+- `verl/experimental/agent_loop/runahead/config.py` - RunaheadConfig
+- `verl/experimental/agent_loop/runahead/types.py` - SecondaryOutput, RunaheadResult types
+- `verl/experimental/agent_loop/router.py` - CentralRouter with runahead support
+- `verl/experimental/agent_loop/agent_loop.py` - AgentLoopManager with `generate_sequences_with_runahead()`

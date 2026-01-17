@@ -258,7 +258,7 @@ async def init_hybrid(self, worker_group: RayWorkerGroup):
     await self.launch_servers()
 ```
 
-**2. Server → Worker Communication** (`verl/workers/rollout/vllm_rollout/vllm_async_server.py:530-533`)
+**2. Server → Worker Communication** (`verl/workers/rollout/vllm_rollout/vllm_async_server.py:526+`)
 ```python
 async def wake_up(self):
     if self.rollout_mode == RolloutMode.HYBRID:

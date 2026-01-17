@@ -306,7 +306,7 @@ Turn 3: request_id="conv_123" → cache HIT → Server0 (prefix cache reused)
 | Component | GPU? | Purpose |
 |-----------|------|---------|
 | `AsyncLLM` engine | No | Scheduling, continuous batching |
-| `ExternalZeroMQDistributedExecutor` | No | Route commands to workers |
+| ZMQ communication layer | No | Route commands to workers |
 | `vLLMAsyncRollout` workers | Yes | Model weights, forward pass |
 
 ### ZMQ Socket Topology (TP=2, DP=4)
@@ -430,12 +430,11 @@ actor_rollout_ref:
 
 | Class | File | Lines |
 |-------|------|-------|
-| `vLLMHttpServer` | `verl/workers/rollout/vllm_rollout/vllm_async_server.py` | 123-442 |
-| `ExternalZeroMQDistributedExecutor` | `verl/workers/rollout/vllm_rollout/vllm_async_server.py` | 61-118 |
-| `vLLMAsyncRollout` | `verl/workers/rollout/vllm_rollout/vllm_rollout_spmd.py` | 702-884 |
-| ZMQ socket init | `verl/workers/rollout/vllm_rollout/vllm_rollout_spmd.py` | 727-754 |
-| `generate()` | `verl/workers/rollout/vllm_rollout/vllm_async_server.py` | 445-513 |
-| Abort mechanisms | `verl/workers/rollout/vllm_rollout/vllm_async_server.py` | 545-625 |
+| `vLLMHttpServerBase` | `verl/workers/rollout/vllm_rollout/vllm_async_server.py` | 163+ |
+| `vLLMHttpServer` | `verl/workers/rollout/vllm_rollout/vllm_async_server.py` | 846+ |
+| `vLLMAsyncRollout` | `verl/workers/rollout/vllm_rollout/vllm_rollout.py` | 112+ |
+| ZMQ socket init | `verl/workers/rollout/vllm_rollout/vllm_rollout.py` | 137+ |
+| `get_zeromq_address()` | `verl/workers/rollout/vllm_rollout/vllm_rollout.py` | 273+ |
 
 ### Ray Infrastructure
 
