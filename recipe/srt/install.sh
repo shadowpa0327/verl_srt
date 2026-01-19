@@ -216,8 +216,8 @@ fi
 
 # Install pip dependencies
 print_header "Installing pip dependencies"
-uv pip install --upgrade pip setuptools wheel
-uv pip install cmake ninja nanobind pybind11 numpy
+pip install --upgrade pip setuptools wheel
+pip install cmake ninja nanobind pybind11 numpy
 
 # Build and install the package
 print_header "Building and installing SRT plugin"
@@ -232,7 +232,7 @@ if [[ "${USE_CONDA}" == true ]] && [[ -n "${CONDA_PREFIX}" ]]; then
 fi
 
 # Install in editable mode
-uv pip install -e .
+pip install -e .
 
 print_header "Installation Complete"
 echo ""

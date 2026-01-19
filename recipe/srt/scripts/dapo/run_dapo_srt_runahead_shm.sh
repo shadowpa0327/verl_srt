@@ -6,8 +6,8 @@
 
 set -xeuo pipefail
 
-project_name='DAPO'
-exp_name='DAPO-Qwen2.5-7b-MATH-SRT-Runahead'
+project_name='DAPO_SRT'
+exp_name='DAPO-Qwen3-8B-SRT-Runahead-0118-l32-shm'
 
 adv_estimator=grpo
 
@@ -27,26 +27,26 @@ overlong_penalty_factor=1.0
 
 loss_agg_mode="token-mean"
 
-train_prompt_bsz=32
+train_prompt_bsz=128
 n_resp_per_prompt=16
-train_prompt_mini_bsz=8
+train_prompt_mini_bsz=32
 
 # Ray
 NNODES=${NNODES:-1}
-NGPUS_PER_NODE=${NGPUS_PER_NODE:-4}
+NGPUS_PER_NODE=${NGPUS_PER_NODE:-8}
 # Paths
-RAY_DATA_HOME=${RAY_DATA_HOME:-"${HOME}/verl_srt"}
-MODEL_PATH=${MODEL_PATH:-"/home/ubuntu/verl_srt/Qwen3-8B-Base"}
+RAY_DATA_HOME=${RAY_DATA_HOME:-"/opt/tiger/verl"}
+MODEL_PATH="/mnt/hdfs/ccchang_hldy/Qwen3-8B-Base"
 CKPTS_DIR=${CKPTS_DIR:-"${RAY_DATA_HOME}/ckpts/${project_name}/${exp_name}"}
-TRAIN_FILE=${TRAIN_FILE:-"${HOME}/verl/data/dapo-math-17k.parquet"}
-TEST_FILE=${TEST_FILE:-"${HOME}/verl/data/aime-2024.parquet"}
+TRAIN_FILE="/mnt/hdfs/ccchang_hldy/data/dapo-math-17k.parquet"
+TEST_FILE="/mnt/hdfs/ccchang_hldy/data/aime-2024.parquet"
 
 # Data dump directories (set to empty string to disable)
 # ROLLOUT_DATA_DIR: Directory for dumping primary rollout data (prompts, responses, scores)
 # SECONDARY_DATA_DIR: Directory for dumping secondary (runahead) data for analysis
-DATA_DUMP_BASE=${DATA_DUMP_BASE:-"/home/ubuntu/verl_srt/rollout_datas"}  # Set this to enable data dumping, e.g., "${RAY_DATA_HOME}/data_dumps/${exp_name}"
-ROLLOUT_DATA_DIR=${ROLLOUT_DATA_DIR:-"${DATA_DUMP_BASE:+${DATA_DUMP_BASE}/rollout}"}
-SECONDARY_DATA_DIR=${SECONDARY_DATA_DIR:-"${DATA_DUMP_BASE:+${DATA_DUMP_BASE}/secondary}"}
+DATA_DUMP_BASE=${DATA_DUMP_BASE:-"/opt/tiger/verl_srt/rollout_datas/${project_name}/${exp_name}"}
+ROLLOUT_DATA_DIR=${ROLLOUT_DATA_DIR:-"${DATA_DUMP_BASE}/rollout"}
+SECONDARY_DATA_DIR=${SECONDARY_DATA_DIR:-"${DATA_DUMP_BASE}/secondary"}
 
 # Algorithm
 temperature=1.0
@@ -55,13 +55,13 @@ top_k=-1
 val_top_p=0.7
 
 # Performance Related Parameter
-sp_size=2
+sp_size=1
 use_dynamic_bsz=True
 actor_ppo_max_token_len=$(((max_prompt_length + max_response_length) * 2))
 infer_ppo_max_token_len=$(((max_prompt_length + max_response_length) * 3))
 offload=True
 gen_tp=1
-fsdp_size=4
+fsdp_size=8
 
 export VERL_LOGGING_LEVEL=INFO
 export RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO=0
@@ -113,7 +113,7 @@ python3 -m recipe.srt.main_ppo \
     actor_rollout_ref.rollout.temperature=${temperature} \
     actor_rollout_ref.rollout.top_p=${top_p} \
     actor_rollout_ref.rollout.top_k=${top_k} \
-    actor_rollout_ref.rollout.cudagraph_capture_sizes=[1,2,4,8,16,32,64,128,192,256,320,384,448,512,768,896] \
+    actor_rollout_ref.rollout.cudagraph_capture_sizes=[1,2,4,6,8,12,16,24,32,64,96,128,160,192,256,320,384,448,512,768,896] \
     actor_rollout_ref.rollout.val_kwargs.temperature=${temperature} \
     actor_rollout_ref.rollout.val_kwargs.top_p=${val_top_p} \
     actor_rollout_ref.rollout.val_kwargs.top_k=${top_k} \
@@ -142,7 +142,7 @@ python3 -m recipe.srt.main_ppo \
     trainer.resume_mode=auto \
     trainer.log_val_generations=10 \
     +trainer.enable_runahead=true \
-    +trainer.runahead.load_threshold=32 \
+    +trainer.runahead.load_threshold=64 \
     +trainer.runahead.max_queue_size=999999 \
     +trainer.runahead.secondary_priority=10 \
     +trainer.runahead.abort_grace_s=1.0 \
@@ -150,5 +150,7 @@ python3 -m recipe.srt.main_ppo \
     +actor_rollout_ref.rollout.srt_cache_mode=shared_memory \
     +actor_rollout_ref.rollout.srt_max_tree_depth=32 \
     +actor_rollout_ref.rollout.srt_hash_token_count=64 \
-    +actor_rollout_ref.rollout.srt_num_speculative_tokens=5 \
+    +actor_rollout_ref.rollout.srt_num_speculative_tokens=4 \
+    trainer.rollout_data_dir="${ROLLOUT_DATA_DIR}" \
+    +trainer.secondary_data_dir="${SECONDARY_DATA_DIR}" \
     "$@"
