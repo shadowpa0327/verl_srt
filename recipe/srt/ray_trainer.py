@@ -176,6 +176,7 @@ class SRTRayPPOTrainer(RayPPOTrainer):
             "srt_max_tree_depth": rollout_config.get("srt_max_tree_depth", 64),
             "srt_hash_token_count": rollout_config.get("srt_hash_token_count", 128),
             "srt_num_speculative_tokens": rollout_config.get("srt_num_speculative_tokens", 24),
+            "srt_enable_runahead_speculation": rollout_config.get("srt_enable_runahead_speculation", False),
             "srt_shared_memory": {
                 "port": shm_config.get("port", 6378),
                 "memory_size_gb": shm_config.get("memory_size_gb", 100),
@@ -192,6 +193,7 @@ class SRTRayPPOTrainer(RayPPOTrainer):
             "srt_max_tree_depth",
             "srt_hash_token_count",
             "srt_num_speculative_tokens",
+            "srt_enable_runahead_speculation",
             "srt_shared_memory",
         ]
         with open_dict(config):
@@ -239,6 +241,7 @@ class SRTRayPPOTrainer(RayPPOTrainer):
                     "srt_min_token_prob": 0.1,
                     "srt_enable_in_flight_updates": False,  # Disabled for shared_memory
                     "srt_cache_mode": "shared_memory",
+                    "srt_enable_runahead_speculation": self._srt_config.get("srt_enable_runahead_speculation", False),
                     # Shared memory specific params
                     "srt_shared_memory_name": shm_config.get("shared_memory_name", ""),
                     "srt_spec_start_len": shm_config.get("spec_start_len", 2),
@@ -266,6 +269,7 @@ class SRTRayPPOTrainer(RayPPOTrainer):
                     "srt_max_spec_factor": 1.0,
                     "srt_min_token_prob": 0.1,
                     "srt_enable_in_flight_updates": True,
+                    "srt_enable_runahead_speculation": self._srt_config.get("srt_enable_runahead_speculation", False),
                 }
 
                 # Merge with existing speculative_config if present
@@ -1289,6 +1293,20 @@ class SRTRayPPOTrainer(RayPPOTrainer):
                             metrics["runahead/secondary_completed"] = runahead_metrics.secondary_completed
                             metrics["runahead/secondary_aborted"] = runahead_metrics.secondary_aborted
                             metrics["runahead/secondary_rejected"] = runahead_metrics.secondary_rejected
+
+                            # Token-level metrics
+                            metrics["runahead/secondary_tokens_total"] = runahead_metrics.secondary_tokens_total
+                            metrics["runahead/secondary_tokens_completed"] = runahead_metrics.secondary_tokens_completed
+                            metrics["runahead/secondary_tokens_aborted"] = runahead_metrics.secondary_tokens_aborted
+                            metrics["runahead/avg_tokens_per_secondary"] = runahead_metrics.avg_tokens_per_secondary
+
+                            # Derived efficiency metrics
+                            primary_time_s = runahead_metrics.primary_time_s
+                            if primary_time_s > 0:
+                                # Tokens generated per second of primary batch time (bubble utilization)
+                                metrics["runahead/tokens_per_primary_second"] = (
+                                    runahead_metrics.secondary_tokens_total / primary_time_s
+                                )
 
                             # Compute utilization ratio
                             total_secondary = (runahead_metrics.secondary_completed +

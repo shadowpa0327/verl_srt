@@ -23,6 +23,7 @@ from typing import Any, Callable, Optional
 
 import cloudpickle as pickle
 import numpy as np
+from omegaconf import ListConfig
 import ray
 import vllm.entrypoints.cli.serve
 import zmq
@@ -356,8 +357,16 @@ class vLLMHttpServerBase:
                     server_args.append(f"--no-{k}")
             elif v is not None:
                 server_args.append(f"--{k}")
-                # Use json.dumps for dict to ensure valid JSON format
-                server_args.append(json.dumps(v) if isinstance(v, dict) else str(v))
+                # Handle different types appropriately for CLI args:
+                # - Lists: unpack as multiple args (for nargs="+")
+                # - Dicts: JSON dump (for complex configs)
+                # - Others: string conversion
+                if isinstance(v, (list, ListConfig)):
+                    server_args.extend(str(item) for item in v)
+                elif isinstance(v, dict):
+                    server_args.append(json.dumps(v))
+                else:
+                    server_args.append(str(v))
 
         if self.replica_rank == 0:
             pprint(server_args)

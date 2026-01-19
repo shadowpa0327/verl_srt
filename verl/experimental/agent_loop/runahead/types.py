@@ -53,14 +53,59 @@ class RunaheadMetrics:
         secondary_aborted: Number of secondary requests aborted.
         secondary_rejected: Number of secondary requests rejected by admission.
         bubble_utilization: Fraction of bubble time utilized (0.0 to 1.0).
+
+        # Token-level metrics
+        secondary_tokens_total: Total tokens generated across all secondary outputs.
+        secondary_tokens_completed: Tokens from completed secondary outputs.
+        secondary_tokens_aborted: Tokens from aborted secondary outputs.
+        avg_tokens_per_secondary: Average tokens per started secondary request.
+
+        # Timing breakdown
+        secondary_total_time_s: Total wall-clock time spent on secondary generation.
+        secondary_queue_time_s: Time secondary requests spent waiting in queue.
+        first_secondary_start_s: Time from batch start until first secondary started.
+        last_secondary_end_s: Time from batch start until last secondary finished.
+
+        # Admission control metrics
+        queue_depth_at_admission: Average queue depth when secondaries were admitted.
+        queue_depth_max: Maximum queue depth observed during batch.
+        avg_server_load_at_admission: Average server load when admitting secondaries.
+        rejection_reasons: Counts of rejection reasons (load, kv_cache, queue_full).
+
+        # Per-server distribution
+        server_secondary_counts: Count of secondaries dispatched to each server.
+        server_completion_counts: Count of completed secondaries per server.
     """
 
+    # Request counts (original)
     primary_time_s: float = 0.0
     secondary_started: int = 0
     secondary_completed: int = 0
     secondary_aborted: int = 0
     secondary_rejected: int = 0
     bubble_utilization: float = 0.0
+
+    # Token-level metrics
+    secondary_tokens_total: int = 0
+    secondary_tokens_completed: int = 0
+    secondary_tokens_aborted: int = 0
+    avg_tokens_per_secondary: float = 0.0
+
+    # Timing breakdown
+    secondary_total_time_s: float = 0.0
+    secondary_queue_time_s: float = 0.0
+    first_secondary_start_s: float = 0.0
+    last_secondary_end_s: float = 0.0
+
+    # Admission control metrics
+    queue_depth_at_admission: float = 0.0
+    queue_depth_max: int = 0
+    avg_server_load_at_admission: float = 0.0
+    rejection_reasons: dict[str, int] = field(default_factory=dict)
+
+    # Per-server distribution
+    server_secondary_counts: dict[int, int] = field(default_factory=dict)
+    server_completion_counts: dict[int, int] = field(default_factory=dict)
 
 
 @dataclass

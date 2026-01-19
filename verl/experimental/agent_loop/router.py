@@ -1082,7 +1082,30 @@ class RunaheadCentralRouter:
                 self._batch_metrics.secondary_aborted += 1
         self._in_flight_batch.clear()
 
-        # 6. Build result
+        # 6. Compute token-level metrics from batch results
+        tokens_total = 0
+        tokens_completed = 0
+        tokens_aborted = 0
+        for output in self._batch_results:
+            tokens_total += output.tokens_generated
+            if output.status == "completed":
+                tokens_completed += output.tokens_generated
+            elif output.status == "aborted":
+                tokens_aborted += output.tokens_generated
+
+        self._batch_metrics.secondary_tokens_total = tokens_total
+        self._batch_metrics.secondary_tokens_completed = tokens_completed
+        self._batch_metrics.secondary_tokens_aborted = tokens_aborted
+
+        # Compute average tokens per started secondary
+        if self._batch_metrics.secondary_started > 0:
+            self._batch_metrics.avg_tokens_per_secondary = (
+                tokens_total / self._batch_metrics.secondary_started
+            )
+        else:
+            self._batch_metrics.avg_tokens_per_secondary = 0.0
+
+        # 7. Build result
         result = RunaheadBatchResult(
             batch_id=batch_id,
             outputs=list(self._batch_results),
@@ -1178,7 +1201,7 @@ class RunaheadCentralRouter:
                     self.total_secondary_requests += 1
 
                 if admitted_counts:
-                    logger.info(f"Admitted secondaries distribution: {admitted_counts}")
+                    logger.debug(f"Admitted secondaries distribution: {admitted_counts}")
                     # Yield to let tasks start and convert reservations to actual load
                     await asyncio.sleep(0)
 

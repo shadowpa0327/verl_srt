@@ -41,12 +41,12 @@ CKPTS_DIR=${CKPTS_DIR:-"${RAY_DATA_HOME}/ckpts/${project_name}/${exp_name}"}
 TRAIN_FILE=${TRAIN_FILE:-"${HOME}/verl/data/dapo-math-17k.parquet"}
 TEST_FILE=${TEST_FILE:-"${HOME}/verl/data/aime-2024.parquet"}
 
-# Data dump directories (set DATA_DUMP_BASE="" to disable)
+# Data dump directories (set to empty string to disable)
 # ROLLOUT_DATA_DIR: Directory for dumping primary rollout data (prompts, responses, scores)
 # SECONDARY_DATA_DIR: Directory for dumping secondary (runahead) data for analysis
-DATA_DUMP_BASE=${DATA_DUMP_BASE:-"/home/ubuntu/verl_srt/rollout_datas/${project_name}/${exp_name}"}
-ROLLOUT_DATA_DIR=${ROLLOUT_DATA_DIR:-"${DATA_DUMP_BASE}/rollout"}
-SECONDARY_DATA_DIR=${SECONDARY_DATA_DIR:-"${DATA_DUMP_BASE}/secondary"}
+DATA_DUMP_BASE=${DATA_DUMP_BASE:-"/home/ubuntu/verl_srt/rollout_datas"}  # Set this to enable data dumping, e.g., "${RAY_DATA_HOME}/data_dumps/${exp_name}"
+ROLLOUT_DATA_DIR=${ROLLOUT_DATA_DIR:-"${DATA_DUMP_BASE:+${DATA_DUMP_BASE}/rollout}"}
+SECONDARY_DATA_DIR=${SECONDARY_DATA_DIR:-"${DATA_DUMP_BASE:+${DATA_DUMP_BASE}/secondary}"}
 
 # Algorithm
 temperature=1.0
@@ -113,6 +113,7 @@ python3 -m recipe.srt.main_ppo \
     actor_rollout_ref.rollout.temperature=${temperature} \
     actor_rollout_ref.rollout.top_p=${top_p} \
     actor_rollout_ref.rollout.top_k=${top_k} \
+    actor_rollout_ref.rollout.cudagraph_capture_sizes=[1,2,4,8,16,32,64,128,192,256,320,384,448,512,768,896] \
     actor_rollout_ref.rollout.val_kwargs.temperature=${temperature} \
     actor_rollout_ref.rollout.val_kwargs.top_p=${val_top_p} \
     actor_rollout_ref.rollout.val_kwargs.top_k=${top_k} \
@@ -150,6 +151,4 @@ python3 -m recipe.srt.main_ppo \
     +actor_rollout_ref.rollout.srt_max_tree_depth=32 \
     +actor_rollout_ref.rollout.srt_hash_token_count=64 \
     +actor_rollout_ref.rollout.srt_num_speculative_tokens=5 \
-    trainer.rollout_data_dir="${ROLLOUT_DATA_DIR}" \
-    +trainer.secondary_data_dir="${SECONDARY_DATA_DIR}" \
     "$@"

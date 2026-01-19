@@ -174,6 +174,7 @@ def apply_patches():
                                     spec_prefix_len=7,  # SPECRL_PREFIX_LEN
                                     min_token_prob=srt_config.min_token_prob,
                                     suffix_cache=None,  # Lazy initialization
+                                    enable_runahead_speculation=srt_config.enable_runahead_speculation,
                                 )
                                 logger.info(
                                     f"Using SharedMemorySuffixDecodingProposer (shared memory mode, lazy init, "
@@ -206,6 +207,7 @@ def apply_patches():
                                 min_token_prob=srt_config.min_token_prob,
                                 max_model_len=vllm_config.model_config.max_model_len,
                                 enable_in_flight_updates=srt_config.enable_in_flight_updates,
+                                enable_runahead_speculation=srt_config.enable_runahead_speculation,
                             )
 
                     # Set up rejection sampler (same as other spec decode methods)

@@ -44,6 +44,7 @@ class ParallelSuffixDecodingProposer:
         enable_in_flight_updates: bool = True,
         num_threads: int = 8,
         parallel_threshold: int = 8,
+        enable_runahead_speculation: bool = False,
     ):
         """
         Initialize the parallel suffix decoding proposer.
@@ -63,6 +64,10 @@ class ParallelSuffixDecodingProposer:
                 >0 = use specified number of threads
             parallel_threshold: Minimum batch size to trigger parallelization (default: 8)
                 Smaller batches will run sequentially to avoid overhead
+            enable_runahead_speculation: Whether to apply speculative decoding to
+                runahead/secondary requests (with "runahead_" prefix). (default: False)
+                False = runahead requests get no draft tokens (isolates metrics)
+                True = runahead requests also get speculative tokens
         """
         self.num_speculative_tokens = num_speculative_tokens
         self.max_tree_depth = max_tree_depth
@@ -80,12 +85,14 @@ class ParallelSuffixDecodingProposer:
             parallel_threshold=parallel_threshold,
         )
         self.enable_in_flight_updates = enable_in_flight_updates
+        self.enable_runahead_speculation = enable_runahead_speculation
         logger.info(
             "Initialized ParallelSuffixDecodingProposer with num_threads=%s, "
-            "parallel_threshold=%s, enable_in_flight_updates=%s",
+            "parallel_threshold=%s, enable_in_flight_updates=%s, enable_runahead_speculation=%s",
             num_threads,
             parallel_threshold,
             enable_in_flight_updates,
+            enable_runahead_speculation,
         )
 
     def propose(
@@ -130,10 +137,10 @@ class ParallelSuffixDecodingProposer:
             if req_id in input_batch.spec_decode_unsupported_reqs:
                 continue
 
-            # Skip runahead/secondary requests to isolate spec decode metrics
-            # for primary requests only. Runahead requests are identified by
-            # the "runahead_" prefix in their request ID (set by the router).
-            if req_id.startswith("runahead_"):
+            # Skip runahead/secondary requests unless speculation is explicitly enabled.
+            # This isolates spec decode metrics to primary requests only.
+            # Runahead requests are identified by "runahead_" prefix in their request ID.
+            if not self.enable_runahead_speculation and req_id.startswith("runahead_"):
                 continue
 
             num_tokens = input_batch.num_tokens_no_spec[i]

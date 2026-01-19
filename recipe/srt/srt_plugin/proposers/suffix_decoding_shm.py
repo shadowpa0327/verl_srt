@@ -88,6 +88,7 @@ class SharedMemorySuffixDecodingProposer:
         spec_prefix_len: int = SPEC_PREFIX_LEN,
         min_token_prob: float = MIN_TOKEN_PROB,
         suffix_cache=None,  # Injected from runner_patches
+        enable_runahead_speculation: bool = False,
     ):
         """
         Initialize SharedMemorySuffixDecodingProposer.
@@ -99,11 +100,16 @@ class SharedMemorySuffixDecodingProposer:
             min_token_prob: Minimum token probability for speculation.
             suffix_cache: Injected SuffixCache instance from runner_patches.
                          If None, creates a new instance (fallback).
+            enable_runahead_speculation: Whether to apply speculative decoding to
+                runahead/secondary requests (with "runahead_" prefix). (default: False)
+                False = runahead requests get no draft tokens (isolates metrics)
+                True = runahead requests also get speculative tokens
         """
         self.num_speculative_tokens = num_speculative_tokens
         self.max_model_len = max_model_len
         self._spec_prefix_len = spec_prefix_len
         self._min_token_prob = min_token_prob
+        self.enable_runahead_speculation = enable_runahead_speculation
 
         # Cache is injected by runner_patches via lazy initialization.
         # When suffix_cache=None is passed, we defer initialization until
@@ -184,6 +190,12 @@ class SharedMemorySuffixDecodingProposer:
                 continue
 
             req_id = input_batch.req_ids[i]
+
+            # Skip runahead/secondary requests unless speculation is explicitly enabled.
+            # This isolates spec decode metrics to primary requests only.
+            # Runahead requests are identified by "runahead_" prefix in their request ID.
+            if not self.enable_runahead_speculation and req_id.startswith("runahead_"):
+                continue
 
             # Build pattern from recent tokens
             num_tokens = input_batch.num_tokens_no_spec[i]

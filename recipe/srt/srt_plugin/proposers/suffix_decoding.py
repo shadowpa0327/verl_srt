@@ -33,6 +33,7 @@ class SuffixDecodingProposer:
         min_token_prob: float,
         max_model_len: int,
         enable_in_flight_updates: bool = True,
+        enable_runahead_speculation: bool = False,
     ):
         """
         Initialize the suffix decoding proposer.
@@ -47,6 +48,10 @@ class SuffixDecodingProposer:
             enable_in_flight_updates: Whether to add newly sampled tokens to suffix
                 trees during speculation. Set to False to rely only on pre-loaded
                 snapshots. (default: True)
+            enable_runahead_speculation: Whether to apply speculative decoding to
+                runahead/secondary requests (with "runahead_" prefix). (default: False)
+                False = runahead requests get no draft tokens (isolates metrics)
+                True = runahead requests also get speculative tokens
         """
         self.num_speculative_tokens = num_speculative_tokens
         self.max_tree_depth = max_tree_depth
@@ -64,6 +69,7 @@ class SuffixDecodingProposer:
             max_cached_requests=max_cached_requests,
         )
         self.enable_in_flight_updates = enable_in_flight_updates
+        self.enable_runahead_speculation = enable_runahead_speculation
 
     def propose(
         self,
@@ -87,6 +93,13 @@ class SuffixDecodingProposer:
             # supported with speculative decoding.
             req_id = input_batch.req_ids[i]
             if req_id in input_batch.spec_decode_unsupported_reqs:
+                draft_token_ids.append([])
+                continue
+
+            # Skip runahead/secondary requests unless speculation is explicitly enabled.
+            # This isolates spec decode metrics to primary requests only.
+            # Runahead requests are identified by "runahead_" prefix in their request ID.
+            if not self.enable_runahead_speculation and req_id.startswith("runahead_"):
                 draft_token_ids.append([])
                 continue
 

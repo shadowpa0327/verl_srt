@@ -46,6 +46,12 @@ class SRTSuffixConfig:
     # zero-copy shared memory access via SpecRL's SuffixCache
     cache_mode: str = "snapshot"
 
+    # Whether to apply speculative decoding to runahead/secondary requests.
+    # False = runahead requests (with "runahead_" prefix) get no draft tokens,
+    #         isolating spec decode metrics to primary requests only.
+    # True = runahead requests also get speculative tokens like primary requests.
+    enable_runahead_speculation: bool = False
+
     # Shared memory mode specific params
     shared_memory_name: str = ""  # Empty string means use default "SUFFIX_CACHE"
     spec_start_len: int = 2  # Initial/minimum speculation length
