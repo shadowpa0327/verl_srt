@@ -181,15 +181,7 @@ def _populate_cache_worker(config_dict: dict, result_queue):
                 response_lengths.append(float(len(resp_tokens)))
             responses_per_prompt_list.append(len(resp_list))
 
-        # Compute and log hashes using same algorithm as C++
-        import struct
-        import xxhash
-        def compute_xxhash(tokens):
-            token_bytes = struct.pack(f'{len(tokens)}i', *tokens)
-            return xxhash.xxh64(token_bytes, seed=0).intdigest()
-
         print(f"[Updater] Grouped into {len(prompt_to_responses)} unique prompts")
-        print(f"[Updater] First 3 prompt hashes: {[hex(compute_xxhash(list(p))) for p in list(prompt_to_responses.keys())[:3]]}")
 
         # Send grouped by prompt - use the count from first prompt (all should be same in typical use)
         # For varying counts, we need to send multiple batches
@@ -266,48 +258,6 @@ def _simulate_worker(config_dict: dict, result_queue):
             sim_data = sim_data[:config.max_samples]
 
         print(f"[Simulator] Running simulation on {len(sim_data)} requests...")
-
-        # Debug: Test first request's fetch/speculate before main loop
-        if config.verbose and len(sim_data) > 0:
-            test_item = sim_data[0]
-            test_prompt = tokenize(test_item['input'])
-            test_resp = tokenize(test_item['output'])
-            test_req_id = "debug_test"
-
-            print(f"  [DEBUG] Test fetch/speculate for first request:")
-            print(f"  [DEBUG]   Prompt len: {len(test_prompt)}")
-            print(f"  [DEBUG]   Prompt first 5: {test_prompt[:5].tolist()}")
-            print(f"  [DEBUG]   Prompt last 7: {test_prompt[-7:].tolist()}")
-            print(f"  [DEBUG]   Response len: {len(test_resp)}, tokens: {test_resp.tolist()}")
-
-            prompt_list = test_prompt.tolist()
-            # Compute hash for comparison
-            import struct
-            import xxhash
-            def compute_xxhash(tokens):
-                token_bytes = struct.pack(f'{len(tokens)}i', *tokens)
-                return xxhash.xxh64(token_bytes, seed=0).intdigest()
-
-            print(f"  [DEBUG]   Prompt list type: {type(prompt_list)}, elem type: {type(prompt_list[0]) if prompt_list else None}")
-            print(f"  [DEBUG]   Prompt hash (Python XXH64): {hex(compute_xxhash(prompt_list))}")
-
-            cache.fetch_responses_by_prompts_batch([test_req_id], [prompt_list])
-
-            # Test initial speculate
-            pattern = prompt_list[-7:]
-            print(f"  [DEBUG]   Pattern for speculate: {pattern}")
-            drafts = cache.speculate([test_req_id], [pattern], min_token_prob=0.1, use_tree_spec=False)
-            print(f"  [DEBUG]   Initial draft: {drafts}")
-
-            # Test after 1 token
-            if len(test_resp) > 0:
-                seq = prompt_list + [int(test_resp[0])]
-                pattern = seq[-7:]
-                print(f"  [DEBUG]   Pattern after 1 token: {pattern}")
-                drafts = cache.speculate([test_req_id], [pattern], min_token_prob=0.1, use_tree_spec=False)
-                print(f"  [DEBUG]   After 1 token draft: {drafts}")
-
-            cache.evict_responses(test_req_id)
 
         results = []
         for i, item in enumerate(sim_data):
