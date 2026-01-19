@@ -257,6 +257,60 @@ def _simulate_worker(config_dict: dict, result_queue):
         if config.max_samples > 0:
             sim_data = sim_data[:config.max_samples]
 
+        # Also load cache source data for verification
+        cache_source_data = load_rollout_data(config.cache_tick, config.cache_source)
+
+        # Verification step: Wait until trees are visible in shared memory
+        # This fixes the race condition between updater completing and data being visible
+        print(f"[Simulator] Verifying cache is populated...")
+        max_retries = 20
+        retry_delay = 0.5  # seconds
+        verified = False
+
+        # Get a sample of prompts to verify (first 3 unique prompts from cache source)
+        is_secondary = config.cache_source == "secondary"
+        verify_prompts = []
+        seen_prompts = set()
+        for item in cache_source_data:
+            if is_secondary:
+                prompt_text = item['prompt']
+            else:
+                prompt_text = item['input']
+            if prompt_text not in seen_prompts:
+                seen_prompts.add(prompt_text)
+                verify_prompts.append(tokenize(prompt_text))
+                if len(verify_prompts) >= 3:
+                    break
+
+        for retry in range(max_retries):
+            trees_found = 0
+            for i, prompt in enumerate(verify_prompts):
+                req_id = f"verify_{i}"
+                cache.fetch_responses_by_prompts_batch([req_id], [prompt.tolist()])
+                # Try speculate with the prompt's last few tokens as pattern
+                pattern = prompt[-config.spec_prefix_len:].tolist() if len(prompt) >= config.spec_prefix_len else prompt.tolist()
+                drafts = cache.speculate([req_id], [pattern], min_token_prob=config.min_token_prob)
+                if retry == 0 and config.verbose:
+                    print(f"[Simulator] Verify prompt {i}: len={len(prompt)}, pattern={pattern[-5:]}, drafts={drafts[0][:5] if drafts and drafts[0] else []}")
+                cache.evict_responses(req_id)
+                if drafts and drafts[0]:
+                    trees_found += 1
+
+            if trees_found >= len(verify_prompts):
+                print(f"[Simulator] Cache verified after {retry + 1} attempts ({trees_found}/{len(verify_prompts)} trees found)")
+                verified = True
+                break
+            elif trees_found > 0:
+                print(f"[Simulator] Partial cache ({trees_found}/{len(verify_prompts)} trees), retry {retry + 1}/{max_retries}...")
+            else:
+                if retry == 0:
+                    print(f"[Simulator] Waiting for cache to be visible (retry {retry + 1}/{max_retries})...")
+
+            time.sleep(retry_delay)
+
+        if not verified:
+            print(f"[Simulator] WARNING: Cache verification failed after {max_retries} retries. Proceeding anyway...")
+
         print(f"[Simulator] Running simulation on {len(sim_data)} requests...")
 
         results = []
@@ -421,9 +475,9 @@ def run_simulation(config: SimulatorConfig) -> Dict[str, Any]:
 
         print(f"[Step 1] Cache populated with {result} samples")
 
-        # Longer pause to ensure cache is fully written to shared memory
-        # Note: Increased from 2.0 due to observed race conditions
-        time.sleep(5.0)
+        # Brief pause before starting simulator - actual synchronization is done
+        # via verification step in the simulator subprocess
+        time.sleep(0.5)
 
         # Step 2: Run simulation in separate subprocess
         # (SuffixCache for reading from shared memory)
