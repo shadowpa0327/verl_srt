@@ -28,9 +28,10 @@ grpc::Status RolloutCacheServiceImpl::UpdateCache(
     // std::cout << "  Prompt hash: " << request->prompt_hash() << std::endl;
     // std::cout << "  Number of responses: " << request->responses_size() << std::endl;
 
-    ShmemAllocator alloc(segment_->get_segment_manager());
-    SuffixTree* tree = segment_->construct<SuffixTree>(anonymous_instance)(alloc);
+    const uint64_t prompt_hash = request->prompt_hash();
+    uint64_t segment_base = (uint64_t)segment_->get_address();
 
+    // Build tokens array for responses BEFORE acquiring lock (minimize lock hold time)
     const int prefix_tokens_to_include = 5;
     int tokens_len = request->prompt().tokens_size() + 1;
     for (int i = 0; i < request->responses_size(); i++) {
@@ -64,27 +65,40 @@ grpc::Status RolloutCacheServiceImpl::UpdateCache(
         // std::cout << "  Response " << i << " added to suffix tree, size:" << token_list.tokens_size() << std::endl;
     }
 
-    tree->extend(0, tokens);
-    SuffixTree* existing_tree_ptr = nullptr;
-    {
-        const uint64_t prompt_hash = request->prompt_hash();
-        auto mutex = segment_->find<interprocess_mutex>("mutex").first;
-        scoped_lock<interprocess_mutex> shm_lock(*mutex);
-        auto it = tree_map_->find(prompt_hash);
-        uint64_t segment_base = (uint64_t)segment_->get_address();
+    // Acquire lock for tree lookup, creation, and extension
+    // Lock must be held during extend() because SuffixTree is not thread-safe
+    auto mutex = segment_->find<interprocess_mutex>("mutex").first;
+    scoped_lock<interprocess_mutex> shm_lock(*mutex);
+
+    SuffixTree* tree = nullptr;
+    int next_seq_id = 0;
+    bool is_new_tree = false;
+
+    // Check if tree already exists for this prompt hash
+    auto it = tree_map_->find(prompt_hash);
+    if (it != tree_map_->end()) {
+        // Reuse existing tree - get next available seq_id
+        tree = (SuffixTree*)(it->second + segment_base);
+        next_seq_id = tree->num_seqs();
+    }
+
+    // If no existing tree, create a new one
+    if (tree == nullptr) {
+        ShmemAllocator alloc(segment_->get_segment_manager());
+        tree = segment_->construct<SuffixTree>(anonymous_instance)(alloc);
+        is_new_tree = true;
+    }
+
+    // Extend the tree with new sequence (incremental update)
+    // This MUST be done under lock since SuffixTree::extend() is not thread-safe
+    tree->extend(next_seq_id, tokens);
+
+    // Register new tree in the map if we created one
+    if (is_new_tree) {
         uint64_t tree_ptr = (uint64_t)tree - segment_base;
-        if (it != tree_map_->end()) {
-            // Delete the existing tree
-            uint64_t existing_tree = it->second;
-            it->second = tree_ptr;
-            existing_tree_ptr = (SuffixTree*)(existing_tree + segment_base);
-        }
         tree_map_->emplace(prompt_hash, tree_ptr);
     }
 
-    if (existing_tree_ptr) {
-        segment_->destroy_ptr(existing_tree_ptr);
-    }
     response->set_success(true);
 
     return grpc::Status::OK;
