@@ -6,15 +6,12 @@
 # - shm_cache: Shared memory mode (requires protobuf, grpc, xxhash, boost)
 #
 # Usage:
-#   ./install.sh              # Install using system dependencies
+#   ./install.sh              # Install everything (requires sudo for apt)
 #   ./install.sh --deps-only  # Only install system dependencies, don't build
 #
 # The script will:
-# 1. Check/install system dependencies for shm_cache extensions
+# 1. Install system dependencies for shm_cache extensions via apt
 # 2. pip install -e the srt_plugin package
-#
-# Note: If shm_cache dependencies are missing, only suffix_cache will be built.
-# This is fine if you only need snapshot mode.
 
 set -e
 
@@ -59,9 +56,6 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Options:"
             echo "  --deps-only  Only install dependencies, don't build the package"
-            echo ""
-            echo "The script will check for system packages and"
-            echo "provide instructions for installing missing ones."
             exit 0
             ;;
         *)
@@ -85,54 +79,25 @@ if [[ -z "${VIRTUAL_ENV}" ]] && [[ -z "${CONDA_PREFIX}" ]]; then
     echo ""
 fi
 
-# Function to check system dependencies
-check_system_deps() {
-    local missing_deps=()
+# Install system dependencies via apt
+print_header "Installing system dependencies via apt"
+sudo apt update
+sudo apt install -y \
+    libprotobuf-dev \
+    protobuf-compiler \
+    libgrpc-dev \
+    libgrpc++-dev \
+    protobuf-compiler-grpc \
+    libxxhash-dev \
+    libboost-all-dev \
+    cmake \
+    pkg-config
 
-    if ! command -v protoc &> /dev/null; then
-        missing_deps+=("protobuf-compiler")
-    fi
-
-    if ! command -v grpc_cpp_plugin &> /dev/null; then
-        missing_deps+=("protobuf-compiler-grpc")
-    fi
-
-    if ! command -v pkg-config &> /dev/null; then
-        missing_deps+=("pkg-config")
-    fi
-
-    if ! command -v cmake &> /dev/null; then
-        missing_deps+=("cmake")
-    fi
-
-    echo "${missing_deps[@]}"
-}
-
-# Check for missing dependencies
-MISSING_DEPS=$(check_system_deps)
-
-if [[ -n "${MISSING_DEPS}" ]]; then
-    print_warning "Missing system dependencies for shm_cache extensions:"
-    for dep in ${MISSING_DEPS}; do
-        echo "  - ${dep}"
-    done
-    echo ""
-    echo "To install missing dependencies via apt, run:"
-    echo "  sudo apt update && sudo apt install -y \\"
-    echo "      libprotobuf-dev protobuf-compiler libgrpc-dev \\"
-    echo "      libgrpc++-dev protobuf-compiler-grpc libxxhash-dev \\"
-    echo "      libboost-all-dev cmake pkg-config"
-    echo ""
-    print_warning "Continuing without shm_cache dependencies."
-    print_warning "Only suffix_cache (snapshot mode) will be available."
-    echo ""
-else
-    print_success "All system dependencies for shm_cache are available."
-    echo ""
-fi
+print_success "System dependencies installed."
+echo ""
 
 if [[ "${DEPS_ONLY}" == true ]]; then
-    print_success "Dependencies check complete."
+    print_success "Dependencies installation complete."
     echo "Run '$0' again without --deps-only to build the package."
     exit 0
 fi
@@ -169,12 +134,7 @@ if python -c "from srt_plugin.shm_cache.suffix_cache import SuffixCache" 2>/dev/
     echo "NOTE: Both shm_cache modules register the same proto file."
     echo "      Import only one module per process to avoid protobuf conflicts."
 else
-    print_warning "shm_cache extensions are NOT available."
-    echo "To enable shm_cache, install system dependencies and reinstall:"
-    echo "  sudo apt update && sudo apt install -y \\"
-    echo "      libprotobuf-dev protobuf-compiler libgrpc-dev \\"
-    echo "      libgrpc++-dev protobuf-compiler-grpc libxxhash-dev \\"
-    echo "      libboost-all-dev cmake pkg-config"
-    echo "  Then run: $0"
+    print_error "shm_cache extensions failed to build."
+    echo "Check the build output above for errors."
 fi
 echo ""
