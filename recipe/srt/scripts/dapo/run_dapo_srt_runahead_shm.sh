@@ -122,6 +122,11 @@ python3 -m recipe.srt.main_ppo \
     actor_rollout_ref.ref.fsdp_config.param_offload=${offload} \
     actor_rollout_ref.ref.ulysses_sequence_parallel_size=${sp_size} \
     actor_rollout_ref.actor.fsdp_config.fsdp_size=${fsdp_size} \
+    +actor_rollout_ref.rollout.enable_srt=true \
+    +actor_rollout_ref.rollout.srt_cache_mode=shared_memory \
+    +actor_rollout_ref.rollout.srt_max_tree_depth=32 \
+    +actor_rollout_ref.rollout.srt_hash_token_count=64 \
+    +actor_rollout_ref.rollout.srt_num_speculative_tokens=5 \
     reward_model.reward_manager=dapo \
     +reward_model.reward_kwargs.overlong_buffer_cfg.enable=${enable_overlong_buffer} \
     +reward_model.reward_kwargs.overlong_buffer_cfg.len=${overlong_buffer_len} \
@@ -146,11 +151,4 @@ python3 -m recipe.srt.main_ppo \
     +trainer.runahead.max_queue_size=999999 \
     +trainer.runahead.secondary_priority=10 \
     +trainer.runahead.abort_grace_s=1.0 \
-    +actor_rollout_ref.rollout.enable_srt=true \
-    +actor_rollout_ref.rollout.srt_cache_mode=shared_memory \
-    +actor_rollout_ref.rollout.srt_max_tree_depth=32 \
-    +actor_rollout_ref.rollout.srt_hash_token_count=64 \
-    +actor_rollout_ref.rollout.srt_num_speculative_tokens=4 \
-    trainer.rollout_data_dir="${ROLLOUT_DATA_DIR}" \
-    +trainer.secondary_data_dir="${SECONDARY_DATA_DIR}" \
     "$@"
