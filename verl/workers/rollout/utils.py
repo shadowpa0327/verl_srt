@@ -31,6 +31,23 @@ def is_valid_ipv6_address(address: str) -> bool:
         return False
 
 
+def format_url_host(address: str) -> str:
+    """Format an IP address for use in URLs.
+
+    IPv6 addresses must be wrapped in square brackets for URLs.
+    IPv4 addresses are returned unchanged.
+
+    Args:
+        address: IP address string
+
+    Returns:
+        Formatted address suitable for URL construction
+    """
+    if is_valid_ipv6_address(address):
+        return f"[{address}]"
+    return address
+
+
 def get_free_port(address: str) -> tuple[int, socket.socket]:
     family = socket.AF_INET
     if is_valid_ipv6_address(address):

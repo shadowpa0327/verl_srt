@@ -241,16 +241,26 @@ class SharedMemoryCacheManager:
         logger.info(f"Server addresses: {server_addresses}")
 
     def _get_server_addresses(self) -> List[str]:
-        """Get formatted gRPC addresses for all cache servers."""
+        """Get formatted gRPC addresses for all cache servers.
+
+        Uses gRPC URI scheme prefixes to ensure proper address resolution:
+        - IPv6: ipv6:[address]:port
+        - IPv4: ipv4:address:port
+
+        Without these prefixes, gRPC's default DNS resolver fails on IPv6
+        literal addresses because it treats [addr] as a hostname.
+        """
         addresses = []
         for s in self._cache_servers:
             ip = s['ip']
             port = s['port']
-            # Only add brackets for IPv6 addresses (contain colons)
+            # Use gRPC URI scheme prefixes for direct address resolution
             if ":" in ip:
-                addresses.append(f"[{ip}]:{port}")
+                # IPv6 address - use ipv6: scheme with brackets
+                addresses.append(f"ipv6:[{ip}]:{port}")
             else:
-                addresses.append(f"{ip}:{port}")
+                # IPv4 address - use ipv4: scheme without brackets
+                addresses.append(f"ipv4:{ip}:{port}")
         return addresses
 
     @property

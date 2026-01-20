@@ -48,7 +48,7 @@ from verl.utils.config import omega_conf_to_dataclass
 from verl.utils.vllm.vllm_fp8_utils import apply_vllm_fp8_patches
 from verl.workers.config import HFModelConfig, RolloutConfig
 from verl.workers.rollout.replica import RolloutMode, RolloutReplica, TokenOutput
-from verl.workers.rollout.utils import get_free_port, is_valid_ipv6_address, run_unvicorn
+from verl.workers.rollout.utils import format_url_host, get_free_port, is_valid_ipv6_address, run_unvicorn
 from verl.workers.rollout.vllm_rollout import vLLMAsyncRollout
 from verl.workers.rollout.vllm_rollout.utils import (
     VLLM_LORA_INT_ID,
@@ -662,7 +662,7 @@ class vLLMHttpServerBase:
         try:
             import aiohttp
 
-            metrics_url = f"http://{self._server_address}:{self._server_port}/metrics"
+            metrics_url = f"http://{format_url_host(self._server_address)}:{self._server_port}/metrics"
             async with aiohttp.ClientSession() as session:
                 async with session.get(metrics_url, timeout=aiohttp.ClientTimeout(total=5)) as response:
                     if response.status != 200:
@@ -766,7 +766,7 @@ class vLLMHttpServerBase:
         try:
             import aiohttp
 
-            metrics_url = f"http://{self._server_address}:{self._server_port}/metrics"
+            metrics_url = f"http://{format_url_host(self._server_address)}:{self._server_port}/metrics"
             async with aiohttp.ClientSession() as session:
                 async with session.get(metrics_url, timeout=aiohttp.ClientTimeout(total=5)) as response:
                     if response.status != 200:
