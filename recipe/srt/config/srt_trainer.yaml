@@ -1,6 +1,8 @@
 # SRT (Speculative Rollout with Tree-Structured Cache) PPO Trainer Config
 #
 # This config extends the default PPO trainer config with SRT-specific settings.
+# It also includes DAPO defaults for filter_groups and overlong_buffer support.
+#
 # SRT fields are passed via CLI with "+" prefix to avoid schema conflicts.
 #
 # Example CLI usage:
@@ -16,3 +18,24 @@ hydra:
 defaults:
   - ppo_trainer
   - _self_
+
+# DAPO-compatible data config
+data:
+  gen_batch_size: ${data.train_batch_size}
+
+# DAPO-compatible reward model config
+reward_model:
+  reward_manager: dapo
+  overlong_buffer:
+    enable: False
+    len: 0
+    penalty_factor: 0.0
+    log: False
+
+# DAPO-compatible algorithm config
+algorithm:
+  filter_groups:
+    _target_: verl.trainer.config.FilterGroupsConfig
+    enable: False
+    metric: null
+    max_num_gen_batches: 0

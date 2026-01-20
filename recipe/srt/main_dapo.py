@@ -12,15 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-SRT (Speculative Rollout with Tree-Structured Cache) PPO Training Entry Point.
+SRT + DAPO Training Entry Point.
 
-This is the main entry point for PPO training with SRT-based speculative decoding.
-It uses the SRTRayPPOTrainer which integrates suffix tree-based speculation.
+This is the main entry point for DAPO training with SRT-based speculative decoding.
+It uses SRTRayDAPOTrainer which combines:
+- SRT suffix tree speculation for faster rollout
+- DAPO's filter_groups for dynamic sampling
 
 Usage:
-    python -m recipe.srt.main_ppo
+    python -m recipe.srt.main_dapo
 
-Or replace `verl.trainer.main_ppo` with `recipe.srt.main_ppo` in your training scripts.
+Or in your training scripts:
+    -- python3 -m recipe.srt.main_dapo ...
 """
 
 import os
@@ -30,40 +33,24 @@ import hydra
 import ray
 from omegaconf import OmegaConf
 
-from recipe.srt.ray_trainer import SRTRayPPOTrainer
-from verl.experimental.dataset.sampler import AbstractSampler
+from recipe.srt.ray_trainer import SRTRayDAPOTrainer
 from verl.trainer.constants_ppo import get_ppo_ray_runtime_env
 from verl.trainer.main_ppo import create_rl_dataset, create_rl_sampler
 from verl.trainer.ppo.reward import load_reward_manager
 from verl.trainer.ppo.utils import need_critic, need_reference_policy
 from verl.utils.config import validate_config
 from verl.utils.device import auto_set_ascend_device_name, is_cuda_available
-from verl.utils.import_utils import load_extern_object
 
 
 @hydra.main(config_path="config", config_name="srt_trainer", version_base=None)
 def main(config):
-    """Main entry point for SRT PPO training with Hydra configuration management.
-
-    Args:
-        config: Hydra configuration dictionary containing training parameters.
-    """
-    # Automatically set `config.trainer.device = npu` when running on Ascend NPU.
+    """Main entry point for SRT+DAPO training with Hydra configuration management."""
     auto_set_ascend_device_name(config)
+    run_dapo(config)
 
-    run_ppo(config)
 
-
-def run_ppo(config, task_runner_class=None) -> None:
-    """Initialize Ray cluster and run distributed PPO training with SRT.
-
-    Args:
-        config: Training configuration object containing all necessary parameters
-                for distributed PPO training including Ray initialization settings,
-                model paths, and training hyperparameters.
-        task_runner_class: For recipe to change TaskRunner.
-    """
-    # Check if Ray is not initialized
+def run_dapo(config, task_runner_class=None) -> None:
+    """Initialize Ray cluster and run distributed DAPO training with SRT."""
     if not ray.is_initialized():
         default_runtime_env = get_ppo_ray_runtime_env()
         ray_init_kwargs = config.ray_kwargs.get("ray_init", {})
@@ -80,7 +67,7 @@ def run_ppo(config, task_runner_class=None) -> None:
         ray.init(**OmegaConf.to_container(ray_init_kwargs))
 
     if task_runner_class is None:
-        task_runner_class = ray.remote(num_cpus=1)(SRTTaskRunner)
+        task_runner_class = ray.remote(num_cpus=1)(SRTDAPOTaskRunner)
 
     # Create and run the task runner
     if (
@@ -106,12 +93,8 @@ def run_ppo(config, task_runner_class=None) -> None:
         ray.timeline(filename=timeline_json_file)
 
 
-class SRTTaskRunner:
-    """Ray remote class for executing distributed PPO training with SRT.
-
-    This class uses standard verl workers and the SRTRayPPOTrainer which
-    adds suffix tree-based speculative decoding support.
-    """
+class SRTDAPOTaskRunner:
+    """Ray remote class for executing distributed DAPO training with SRT."""
 
     def __init__(self):
         self.role_worker_mapping = {}
@@ -122,33 +105,11 @@ class SRTTaskRunner:
         from verl.single_controller.ray import RayWorkerGroup
         from verl.trainer.ppo.ray_trainer import Role
 
-        use_legacy_worker_impl = config.trainer.get("use_legacy_worker_impl", "auto")
-
-        if use_legacy_worker_impl == "disable":
-            from verl.workers.engine_workers import ActorRolloutRefWorker
-
-            actor_rollout_cls = ActorRolloutRefWorker
-            ray_worker_group_cls = RayWorkerGroup
-            if config.algorithm.use_kl_in_reward or config.actor_rollout_ref.actor.use_kl_loss:
-                role = Role.ActorRolloutRef
-            else:
-                role = Role.ActorRollout
-            self.role_worker_mapping[role] = ray.remote(actor_rollout_cls)
-            self.mapping[role] = "global_pool"
-            return actor_rollout_cls, ray_worker_group_cls
-
-        if config.actor_rollout_ref.rollout.mode == "sync":
-            raise ValueError(
-                "Rollout mode 'sync' has been removed. Please set "
-                "`actor_rollout_ref.rollout.mode=async` to use the native server rollout."
-            )
-
         if config.actor_rollout_ref.actor.strategy in {"fsdp", "fsdp2"}:
             # Check if SRT is enabled to use SRT workers with vLLM patches
             enable_srt = config.actor_rollout_ref.rollout.get("enable_srt", False)
 
             if enable_srt:
-                # Use SRT workers that apply suffix decoding patches
                 from recipe.srt.fsdp_workers import (
                     SRTActorRolloutRefWorker,
                     SRTAsyncActorRolloutRefWorker,
@@ -189,17 +150,9 @@ class SRTTaskRunner:
     def add_critic_worker(self, config):
         """Add critic worker to role mapping."""
         if config.critic.strategy in {"fsdp", "fsdp2"}:
-            use_legacy_worker_impl = config.trainer.get("use_legacy_worker_impl", "auto")
-            if use_legacy_worker_impl in ["auto", "enable"]:
-                from verl.workers.fsdp_workers import CriticWorker
-            elif use_legacy_worker_impl == "disable":
-                from verl.workers.engine_workers import CriticWorker
-            else:
-                raise ValueError(f"Invalid use_legacy_worker_impl: {use_legacy_worker_impl}")
-
+            from verl.workers.fsdp_workers import CriticWorker
         elif config.critic.strategy == "megatron":
             from verl.workers.megatron_workers import CriticWorker
-
         else:
             raise NotImplementedError
 
@@ -215,15 +168,6 @@ class SRTTaskRunner:
             global_pool_id: [config.trainer.n_gpus_per_node] * config.trainer.nnodes,
         }
 
-        if config.reward_model.enable_resource_pool:
-            if config.reward_model.n_gpus_per_node <= 0:
-                raise ValueError("config.reward_model.n_gpus_per_node must be greater than 0")
-            if config.reward_model.nnodes <= 0:
-                raise ValueError("config.reward_model.nnodes must be greater than 0")
-
-            reward_pool = [config.reward_model.n_gpus_per_node] * config.reward_model.nnodes
-            resource_pool_spec["reward_pool"] = reward_pool
-
         from verl.trainer.ppo.ray_trainer import ResourcePoolManager
 
         resource_pool_manager = ResourcePoolManager(resource_pool_spec=resource_pool_spec, mapping=self.mapping)
@@ -234,47 +178,31 @@ class SRTTaskRunner:
         from verl.trainer.ppo.ray_trainer import Role
 
         if config.reward_model.enable:
-            use_legacy_worker_impl = config.trainer.get("use_legacy_worker_impl", "auto")
-            if use_legacy_worker_impl in ["auto", "enable", "disable"]:
-                if config.reward_model.strategy in {"fsdp", "fsdp2"}:
-                    from verl.workers.fsdp_workers import RewardModelWorker
-                elif config.reward_model.strategy == "megatron":
-                    from verl.workers.megatron_workers import RewardModelWorker
-                else:
-                    raise NotImplementedError
+            if config.reward_model.strategy in {"fsdp", "fsdp2"}:
+                from verl.workers.fsdp_workers import RewardModelWorker
+            elif config.reward_model.strategy == "megatron":
+                from verl.workers.megatron_workers import RewardModelWorker
             else:
-                raise ValueError(f"Invalid use_legacy_worker_impl: {use_legacy_worker_impl}")
+                raise NotImplementedError
 
             self.role_worker_mapping[Role.RewardModel] = ray.remote(RewardModelWorker)
-            if config.reward_model.enable_resource_pool:
-                self.mapping[Role.RewardModel] = "reward_pool"
-            else:
-                self.mapping[Role.RewardModel] = "global_pool"
+            self.mapping[Role.RewardModel] = "global_pool"
 
     def add_ref_policy_worker(self, config, ref_policy_cls):
         """Add reference policy worker if KL loss or KL reward is used."""
         from verl.trainer.ppo.ray_trainer import Role
-
-        use_legacy_worker_impl = config.trainer.get("use_legacy_worker_impl", "auto")
-        if use_legacy_worker_impl == "disable":
-            return
 
         if config.algorithm.use_kl_in_reward or config.actor_rollout_ref.actor.use_kl_loss:
             self.role_worker_mapping[Role.RefPolicy] = ray.remote(ref_policy_cls)
             self.mapping[Role.RefPolicy] = "global_pool"
 
     def run(self, config):
-        """Execute the main PPO training workflow with SRT.
-
-        Args:
-            config: Training configuration object containing all parameters needed
-                   for setting up and running the PPO training process.
-        """
+        """Execute the main DAPO training workflow with SRT."""
         from pprint import pprint
 
         from verl.utils.fs import copy_to_local
 
-        print(f"SRTTaskRunner hostname: {socket.gethostname()}, PID: {os.getpid()}")
+        print(f"SRTDAPOTaskRunner hostname: {socket.gethostname()}, PID: {os.getpid()}")
 
         # Override vLLM replica with SRT version if SRT is enabled
         enable_srt = config.actor_rollout_ref.rollout.get("enable_srt", False)
@@ -314,7 +242,7 @@ class SRTTaskRunner:
         # Support both generic reward_kwargs and DAPO-style overlong_buffer
         reward_kwargs = dict(config.reward_model.get("reward_kwargs", {}))
 
-        # DAPO compatibility: add overlong_buffer args if configured
+        # DAPO: add overlong_buffer args if configured
         overlong_buffer_cfg = config.reward_model.get("overlong_buffer", None)
         if overlong_buffer_cfg is not None and overlong_buffer_cfg.get("enable", False):
             reward_kwargs["max_resp_len"] = config.data.max_response_length
@@ -346,8 +274,8 @@ class SRTTaskRunner:
         )
         train_sampler = create_rl_sampler(config.data, train_dataset)
 
-        # Initialize the SRT PPO trainer
-        trainer = SRTRayPPOTrainer(
+        # Initialize the SRT+DAPO trainer
+        trainer = SRTRayDAPOTrainer(
             config=config,
             tokenizer=tokenizer,
             processor=processor,
