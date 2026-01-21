@@ -61,7 +61,10 @@ class SimulatorConfig:
     cache_source: str = "secondary"  # "rollout" or "secondary" - which data to use for cache
     sim_tick: int = 2    # Tick to simulate speculation for
 
-    # Cache server settings
+    # Mode selection
+    mode: str = "shm"  # "shm" (shared memory) or "parallel" (in-process ParallelCache)
+
+    # Cache server settings (for shm mode)
     port: int = 16399
     shm_name: str = "REPLAY_SIM_CACHE"
 
@@ -72,9 +75,16 @@ class SimulatorConfig:
     min_token_prob: float = 0.1
     use_tree_spec: bool = False
 
+    # ParallelCache parameters (for parallel mode)
+    max_tree_depth: int = 64
+    num_threads: int = -1  # -1 = auto-detect
+    parallel_threshold: int = 4
+    hash_token_count: int = 128
+
     # Simulation options
     max_samples: int = 0  # 0 = all samples
     verbose: bool = False
+    online_update: bool = False  # Enable on-the-fly cache updates (parallel mode only)
 
 
 def _server_subprocess_main(port: int, shm_name: str, ready_event):
@@ -429,7 +439,235 @@ def _simulate_worker(config_dict: dict, result_queue):
         result_queue.put(("error", f"{e}\n{traceback.format_exc()}"))
 
 
-def run_simulation(config: SimulatorConfig) -> Dict[str, Any]:
+def _run_parallel_simulation(config: SimulatorConfig) -> Dict[str, Any]:
+    """
+    Run simulation using in-process ParallelSuffixDecodingCache.
+
+    This mode is simpler as it doesn't require separate processes for
+    server/updater - everything runs in a single process using the
+    ParallelSuffixDecodingCache which manages suffix trees directly.
+    """
+    from srt_plugin.suffix_cache import ParallelSuffixDecodingCache
+    from transformers import AutoTokenizer
+    from collections import defaultdict
+
+    # Load tokenizer
+    print(f"Loading tokenizer from {config.model_path}...")
+    tokenizer = AutoTokenizer.from_pretrained(
+        config.model_path,
+        trust_remote_code=True
+    )
+
+    def tokenize(text: str) -> np.ndarray:
+        tokens = tokenizer.encode(text, add_special_tokens=False)
+        return np.array(tokens, dtype=np.int32)
+
+    def load_data(tick: int, source: str) -> List[Dict]:
+        data_path = Path(config.data_dir) / source / f"{tick}.jsonl"
+        if not data_path.exists():
+            raise FileNotFoundError(f"Data not found: {data_path}")
+        data = []
+        with open(data_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    data.append(json.loads(line))
+        return data
+
+    # Create ParallelSuffixDecodingCache
+    online_str = ", online_update=ON" if config.online_update else ""
+    print(f"Creating ParallelSuffixDecodingCache (max_depth={config.max_tree_depth}, "
+          f"threads={config.num_threads}, hash_token_count={config.hash_token_count}{online_str})...")
+    cache = ParallelSuffixDecodingCache(
+        max_tree_depth=config.max_tree_depth,
+        num_threads=config.num_threads,
+        parallel_threshold=config.parallel_threshold,
+        hash_token_count=config.hash_token_count,
+    )
+
+    # Step 1: Load and populate cache with tick N's data
+    print(f"\n[Step 1] Populating cache from {config.cache_source}/{config.cache_tick}.jsonl...")
+    cache_data = load_data(config.cache_tick, config.cache_source)
+    print(f"  Loaded {len(cache_data)} samples")
+
+    is_secondary = config.cache_source == "secondary"
+
+    # Group responses by prompt
+    prompt_to_responses = defaultdict(list)
+    for item in cache_data:
+        if is_secondary:
+            prompt_text = item['prompt']
+            response_text = item['response']
+        else:
+            prompt_text = item['input']
+            response_text = item['output']
+
+        prompt_tokens = tuple(tokenize(prompt_text).tolist())
+        response_tokens = tokenize(response_text)
+
+        if len(response_tokens) == 0:
+            continue
+
+        prompt_to_responses[prompt_tokens].append(response_tokens)
+
+    # Populate cache: start a request for each prompt, add all responses
+    # Note: We keep populate requests active so trees remain accessible via hash lookup.
+    # Trees would be removed if we called stop_request (removing hash mapping too).
+    total_added = 0
+    populate_req_ids = []
+    for prompt_idx, (prompt_tokens, resp_list) in enumerate(prompt_to_responses.items()):
+        temp_req_id = f"cache_populate_{prompt_idx}"
+        prompt_arr = np.array(prompt_tokens, dtype=np.int32)
+        populate_req_ids.append(temp_req_id)
+
+        # Start request (creates/reuses tree based on hash)
+        cache.start_request(temp_req_id, prompt_arr)
+
+        # Add all responses to the tree
+        for resp_tokens in resp_list:
+            # Add prompt + response to tree to build the suffix patterns
+            full_sequence = np.concatenate([prompt_arr, resp_tokens])
+            cache.add_tokens(temp_req_id, full_sequence)
+            total_added += 1
+
+    print(f"  Cache populated with {total_added} responses from {len(prompt_to_responses)} unique prompts")
+    stats = cache.get_stats()
+    print(f"  Forest stats: {stats['num_trees_in_forest']} trees, {stats['num_active_requests']} active requests")
+
+    # Step 2: Run simulation for tick N+1
+    print(f"\n[Step 2] Running simulation on rollout/{config.sim_tick}.jsonl...")
+    sim_data = load_data(config.sim_tick, "rollout")
+    if config.max_samples > 0:
+        sim_data = sim_data[:config.max_samples]
+
+    print(f"  Simulating {len(sim_data)} requests...")
+
+    results = []
+    for i, item in enumerate(sim_data):
+        request_id = f"sim_{i}"
+        prompt = tokenize(item['input'])
+        ground_truth = tokenize(item['output'])
+
+        if len(ground_truth) == 0:
+            if config.verbose:
+                print(f"  Skipping request {i}: empty response")
+            continue
+
+        # Start request (will lookup existing tree via hash)
+        cache.start_request(request_id, prompt)
+
+        steps = []
+        response = []
+
+        while len(response) < len(ground_truth):
+            # Build context from recent tokens
+            if response:
+                sequence = np.concatenate([prompt, np.array(response, dtype=np.int32)])
+            else:
+                sequence = prompt
+
+            pattern_size = min(len(sequence), config.spec_prefix_len)
+            context = sequence[-pattern_size:]
+
+            # Speculate
+            start_time = time.perf_counter()
+            try:
+                draft = cache.speculate(
+                    request_id,
+                    context,
+                    max_spec_tokens=config.spec_max_len,
+                    min_token_prob=config.min_token_prob,
+                    use_tree_spec=config.use_tree_spec,
+                )
+                draft_tokens = draft.token_ids if draft.token_ids is not None else []
+            except Exception as e:
+                if config.verbose:
+                    print(f"  Speculation failed: {e}")
+                draft_tokens = []
+            spec_time = (time.perf_counter() - start_time) * 1000
+
+            # Verify against ground truth
+            accepted_tokens = []
+            remaining_gt = ground_truth[len(response):]
+
+            for j, draft_tok in enumerate(draft_tokens):
+                if j < len(remaining_gt) and draft_tok == remaining_gt[j]:
+                    accepted_tokens.append(draft_tok)
+                else:
+                    break
+
+            new_tokens = accepted_tokens.copy()
+            response.extend(accepted_tokens)
+
+            # Add bonus token (simulating model verification step)
+            if len(response) < len(ground_truth):
+                bonus_token = int(ground_truth[len(response)])
+                new_tokens.append(bonus_token)
+                response.append(bonus_token)
+
+            # Online update: add newly generated tokens to the cache
+            if config.online_update and new_tokens:
+                cache.add_tokens(request_id, np.array(new_tokens, dtype=np.int32))
+
+            steps.append({
+                "step": len(steps),
+                "num_spec_toks": len(draft_tokens),
+                "num_accept_toks": len(accepted_tokens),
+                "num_out_toks": len(new_tokens),
+                "spec_ms": spec_time,
+            })
+
+        cache.stop_request(request_id)
+
+        total_accept = sum(s["num_accept_toks"] for s in steps)
+        total_spec = sum(s["num_spec_toks"] for s in steps)
+        total_out = sum(s["num_out_toks"] for s in steps)
+
+        result = {
+            "request_id": request_id,
+            "prompt_len": len(prompt),
+            "response_len": len(ground_truth),
+            "total_steps": len(steps),
+            "total_accept_toks": total_accept,
+            "total_spec_toks": total_spec,
+            "acceptance_rate": total_accept / total_spec if total_spec > 0 else 0.0,
+            "tokens_per_step": total_out / len(steps) if steps else 0.0,
+        }
+        results.append(result)
+
+        if config.verbose or (i + 1) % 100 == 0:
+            print(f"  [{i+1}/{len(sim_data)}] "
+                  f"steps={result['total_steps']}, "
+                  f"accept_rate={result['acceptance_rate']:.3f}, "
+                  f"toks/step={result['tokens_per_step']:.2f}")
+
+    # Compute aggregates
+    total_steps = sum(r["total_steps"] for r in results)
+    total_accept = sum(r["total_accept_toks"] for r in results)
+    total_spec = sum(r["total_spec_toks"] for r in results)
+    total_out = sum(r["total_steps"] * r["tokens_per_step"] for r in results)
+
+    summary = {
+        "num_requests": len(results),
+        "total_steps": total_steps,
+        "total_accept_toks": total_accept,
+        "total_spec_toks": total_spec,
+        "mean_acceptance_rate": total_accept / total_spec if total_spec > 0 else 0.0,
+        "mean_tokens_per_step": total_out / total_steps if total_steps > 0 else 0.0,
+        "requests": results,
+    }
+
+    # Cleanup populate requests (optional, process will exit anyway)
+    for req_id in populate_req_ids:
+        try:
+            cache.stop_request(req_id)
+        except ValueError:
+            pass  # Already stopped
+
+    return summary
+
+
+def _run_shm_simulation(config: SimulatorConfig) -> Dict[str, Any]:
     """Run the simulation and return results."""
     # Start cache server in subprocess
     ready_event = multiprocessing.Event()
@@ -513,6 +751,26 @@ def run_simulation(config: SimulatorConfig) -> Dict[str, Any]:
         print("\nCache server stopped")
 
 
+def run_simulation(config: SimulatorConfig) -> Dict[str, Any]:
+    """
+    Run the simulation based on the configured mode.
+
+    Args:
+        config: SimulatorConfig with mode set to "shm" or "parallel".
+
+    Returns:
+        Dictionary with simulation results.
+    """
+    if config.mode == "parallel":
+        print(f"Running in PARALLEL mode (in-process ParallelSuffixDecodingCache)")
+        return _run_parallel_simulation(config)
+    elif config.mode == "shm":
+        print(f"Running in SHM mode (shared memory with separate processes)")
+        return _run_shm_simulation(config)
+    else:
+        raise ValueError(f"Unknown mode: {config.mode}. Must be 'shm' or 'parallel'.")
+
+
 def print_results(result: Dict[str, Any]):
     """Print simulation results."""
     print("\n" + "=" * 60)
@@ -548,6 +806,11 @@ def main():
     parser.add_argument("--data_dir", type=str, required=True,
                         help="Path to rollout data directory")
 
+    # Mode selection
+    parser.add_argument("--mode", type=str, default="shm",
+                        choices=["shm", "parallel"],
+                        help="Simulation mode: 'shm' (shared memory, default) or 'parallel' (in-process ParallelCache)")
+
     # Tick configuration
     parser.add_argument("--cache_tick", type=int, default=1,
                         help="Tick number to populate cache from (default: 1)")
@@ -557,11 +820,11 @@ def main():
     parser.add_argument("--sim_tick", type=int, default=2,
                         help="Tick number to simulate (default: 2)")
 
-    # Cache server settings
+    # Cache server settings (for shm mode)
     parser.add_argument("--port", type=int, default=16399,
-                        help="Cache server port (default: 16399)")
+                        help="Cache server port for shm mode (default: 16399)")
     parser.add_argument("--shm_name", type=str, default="REPLAY_SIM_CACHE",
-                        help="Shared memory segment name (default: REPLAY_SIM_CACHE)")
+                        help="Shared memory segment name for shm mode (default: REPLAY_SIM_CACHE)")
 
     # Speculation parameters
     parser.add_argument("--spec_start_len", type=int, default=2,
@@ -573,17 +836,30 @@ def main():
     parser.add_argument("--min_token_prob", type=float, default=0.1,
                         help="Minimum token probability (default: 0.1)")
 
+    # ParallelCache parameters (for parallel mode)
+    parser.add_argument("--max_tree_depth", type=int, default=64,
+                        help="Maximum tree depth for parallel mode (default: 64)")
+    parser.add_argument("--num_threads", type=int, default=-1,
+                        help="Number of threads for parallel mode (-1=auto, default: -1)")
+    parser.add_argument("--parallel_threshold", type=int, default=4,
+                        help="Min batch size to trigger parallelization (default: 4)")
+    parser.add_argument("--hash_token_count", type=int, default=128,
+                        help="Trailing tokens to hash for tree sharing (default: 128)")
+
     # Simulation options
     parser.add_argument("--max_samples", type=int, default=0,
                         help="Maximum samples to simulate (0=all)")
     parser.add_argument("--verbose", action="store_true",
                         help="Verbose output")
+    parser.add_argument("--online_update", action="store_true",
+                        help="Enable on-the-fly cache updates during simulation (parallel mode only)")
 
     args = parser.parse_args()
 
     config = SimulatorConfig(
         model_path=args.model_path,
         data_dir=args.data_dir,
+        mode=args.mode,
         cache_tick=args.cache_tick,
         cache_source=args.cache_source,
         sim_tick=args.sim_tick,
@@ -593,8 +869,13 @@ def main():
         spec_max_len=args.spec_max_len,
         spec_prefix_len=args.spec_prefix_len,
         min_token_prob=args.min_token_prob,
+        max_tree_depth=args.max_tree_depth,
+        num_threads=args.num_threads,
+        parallel_threshold=args.parallel_threshold,
+        hash_token_count=args.hash_token_count,
         max_samples=args.max_samples,
         verbose=args.verbose,
+        online_update=args.online_update,
     )
 
     result = run_simulation(config)
