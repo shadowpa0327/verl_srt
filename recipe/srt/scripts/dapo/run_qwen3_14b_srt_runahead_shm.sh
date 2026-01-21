@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 set -xeuo pipefail
 
+export GRPC_DNS_RESOLVER=native
+export NCCL_DEBUG=ERROR
+
 project_name='DAPO_SRT'
-exp_name='DAPO-Qwen3-14B-runahead-o20k-16h800-filtered'
+exp_name='DAPO-Qwen3-14B-runahead-o20k-16h800-filtered' 
+
 
 adv_estimator=grpo
 
@@ -42,6 +46,10 @@ CKPTS_DIR=/mnt/hdfs/ccchang_hldy/ckpts/${project_name}/${exp_name}
 TRAIN_FILE=/mnt/hdfs/ccchang_hldy/data/dapo-math-17k-unique-fixed.parquet
 TEST_FILE=/mnt/hdfs/ccchang_hldy/data/aime-2024.parquet
 
+DATA_DUMP_BASE=${DATA_DUMP_BASE:-"/mnt/hdfs/ccchang_hldy/rollout_data/${project_name}/${exp_name}"}
+ROLLOUT_DATA_DIR=${ROLLOUT_DATA_DIR:-"${DATA_DUMP_BASE}/rollout"}
+SECONDARY_DATA_DIR=${SECONDARY_DATA_DIR:-"${DATA_DUMP_BASE}/secondary"}
+
 # Algorithm
 temperature=1.0
 top_p=1.0
@@ -56,7 +64,7 @@ infer_ppo_max_token_len=$((max_prompt_length + max_response_length))
 offload=True
 gen_tp=2
 
-ray job submit --no-wait --runtime-env="${RUNTIME_ENV}" \
+ray job submit --runtime-env="${RUNTIME_ENV}" \
     --working-dir "${WORKING_DIR}" \
     -- python3 -m recipe.srt.main_dapo \
     data.train_files="${TRAIN_FILE}" \
@@ -112,6 +120,8 @@ ray job submit --no-wait --runtime-env="${RUNTIME_ENV}" \
     actor_rollout_ref.rollout.val_kwargs.do_sample=True \
     actor_rollout_ref.rollout.val_kwargs.n=1 \
     actor_rollout_ref.rollout.name=vllm \
+    actor_rollout_ref.rollout.mode=async \
+    actor_rollout_ref.rollout.disable_log_stats=False \
     actor_rollout_ref.ref.fsdp_config.param_offload=${offload} \
     actor_rollout_ref.ref.ulysses_sequence_parallel_size=${sp_size} \
     actor_rollout_ref.actor.fsdp_config.fsdp_size=-1 \
@@ -128,6 +138,7 @@ ray job submit --no-wait --runtime-env="${RUNTIME_ENV}" \
     trainer.test_freq=10 \
     trainer.save_freq=50\
     trainer.total_epochs=1 \
+    trainer.total_training_steps=200 \
     trainer.default_local_dir="${CKPTS_DIR}" \
     trainer.resume_mode=auto \
     +trainer.enable_runahead=true \
@@ -135,8 +146,10 @@ ray job submit --no-wait --runtime-env="${RUNTIME_ENV}" \
     +trainer.runahead.max_queue_size=999999 \
     +trainer.runahead.secondary_priority=10 \
     +trainer.runahead.abort_grace_s=1.0 \
+    trainer.rollout_data_dir="${ROLLOUT_DATA_DIR}" \
+    +trainer.secondary_data_dir="${SECONDARY_DATA_DIR}" \
     +actor_rollout_ref.rollout.enable_srt=true \
     +actor_rollout_ref.rollout.srt_cache_mode=shared_memory \
     +actor_rollout_ref.rollout.srt_max_tree_depth=32 \
     +actor_rollout_ref.rollout.srt_hash_token_count=64 \
-    +actor_rollout_ref.rollout.srt_num_speculative_tokens=6
+    +actor_rollout_ref.rollout.srt_num_speculative_tokens=6 
