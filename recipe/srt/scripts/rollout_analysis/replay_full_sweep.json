@@ -1,0 +1,1642 @@
+{
+  "prob=0.3": [
+    {
+      "cache_tick": 1,
+      "sim_tick": 2,
+      "acceptance_rate": 0.2815,
+      "tokens_per_step": 1.447,
+      "total_steps": 268160,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 2,
+      "sim_tick": 3,
+      "acceptance_rate": 0.2703,
+      "tokens_per_step": 1.433,
+      "total_steps": 300224,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 3,
+      "sim_tick": 4,
+      "acceptance_rate": 0.2782,
+      "tokens_per_step": 1.467,
+      "total_steps": 319528,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 4,
+      "sim_tick": 5,
+      "acceptance_rate": 0.2649,
+      "tokens_per_step": 1.425,
+      "total_steps": 308439,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 5,
+      "sim_tick": 6,
+      "acceptance_rate": 0.2687,
+      "tokens_per_step": 1.429,
+      "total_steps": 310174,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 6,
+      "sim_tick": 7,
+      "acceptance_rate": 0.2686,
+      "tokens_per_step": 1.455,
+      "total_steps": 295289,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 7,
+      "sim_tick": 8,
+      "acceptance_rate": 0.2829,
+      "tokens_per_step": 1.468,
+      "total_steps": 285383,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 8,
+      "sim_tick": 9,
+      "acceptance_rate": 0.2733,
+      "tokens_per_step": 1.444,
+      "total_steps": 299099,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 9,
+      "sim_tick": 10,
+      "acceptance_rate": 0.2793,
+      "tokens_per_step": 1.423,
+      "total_steps": 291337,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 10,
+      "sim_tick": 11,
+      "acceptance_rate": 0.2813,
+      "tokens_per_step": 1.459,
+      "total_steps": 281849,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 11,
+      "sim_tick": 12,
+      "acceptance_rate": 0.2948,
+      "tokens_per_step": 1.507,
+      "total_steps": 316180,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 12,
+      "sim_tick": 13,
+      "acceptance_rate": 0.286,
+      "tokens_per_step": 1.474,
+      "total_steps": 296581,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 13,
+      "sim_tick": 14,
+      "acceptance_rate": 0.3038,
+      "tokens_per_step": 1.536,
+      "total_steps": 278476,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 14,
+      "sim_tick": 15,
+      "acceptance_rate": 0.2986,
+      "tokens_per_step": 1.515,
+      "total_steps": 277467,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 15,
+      "sim_tick": 16,
+      "acceptance_rate": 0.3164,
+      "tokens_per_step": 1.592,
+      "total_steps": 259629,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 16,
+      "sim_tick": 17,
+      "acceptance_rate": 0.3069,
+      "tokens_per_step": 1.536,
+      "total_steps": 287727,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 17,
+      "sim_tick": 18,
+      "acceptance_rate": 0.3159,
+      "tokens_per_step": 1.603,
+      "total_steps": 297049,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 18,
+      "sim_tick": 19,
+      "acceptance_rate": 0.342,
+      "tokens_per_step": 1.735,
+      "total_steps": 314643,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 19,
+      "sim_tick": 20,
+      "acceptance_rate": 0.3256,
+      "tokens_per_step": 1.669,
+      "total_steps": 291985,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 20,
+      "sim_tick": 21,
+      "acceptance_rate": 0.3339,
+      "tokens_per_step": 1.726,
+      "total_steps": 297571,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 21,
+      "sim_tick": 22,
+      "acceptance_rate": 0.3371,
+      "tokens_per_step": 1.732,
+      "total_steps": 273475,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 22,
+      "sim_tick": 23,
+      "acceptance_rate": 0.3374,
+      "tokens_per_step": 1.757,
+      "total_steps": 333423,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 23,
+      "sim_tick": 24,
+      "acceptance_rate": 0.3642,
+      "tokens_per_step": 1.853,
+      "total_steps": 322268,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 24,
+      "sim_tick": 25,
+      "acceptance_rate": 0.3648,
+      "tokens_per_step": 1.875,
+      "total_steps": 270243,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 25,
+      "sim_tick": 26,
+      "acceptance_rate": 0.3645,
+      "tokens_per_step": 1.888,
+      "total_steps": 290752,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 26,
+      "sim_tick": 27,
+      "acceptance_rate": 0.3564,
+      "tokens_per_step": 1.877,
+      "total_steps": 323512,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 27,
+      "sim_tick": 28,
+      "acceptance_rate": 0.3574,
+      "tokens_per_step": 1.881,
+      "total_steps": 326041,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 28,
+      "sim_tick": 29,
+      "acceptance_rate": 0.3417,
+      "tokens_per_step": 1.824,
+      "total_steps": 405455,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 29,
+      "sim_tick": 30,
+      "acceptance_rate": 0.372,
+      "tokens_per_step": 1.983,
+      "total_steps": 362576,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 30,
+      "sim_tick": 31,
+      "acceptance_rate": 0.3679,
+      "tokens_per_step": 1.926,
+      "total_steps": 371156,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 31,
+      "sim_tick": 32,
+      "acceptance_rate": 0.3771,
+      "tokens_per_step": 1.971,
+      "total_steps": 315468,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 32,
+      "sim_tick": 33,
+      "acceptance_rate": 0.3701,
+      "tokens_per_step": 1.956,
+      "total_steps": 361664,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 33,
+      "sim_tick": 34,
+      "acceptance_rate": 0.3767,
+      "tokens_per_step": 1.993,
+      "total_steps": 377884,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 34,
+      "sim_tick": 35,
+      "acceptance_rate": 0.3793,
+      "tokens_per_step": 2.01,
+      "total_steps": 362856,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 35,
+      "sim_tick": 36,
+      "acceptance_rate": 0.3419,
+      "tokens_per_step": 1.863,
+      "total_steps": 447720,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 36,
+      "sim_tick": 37,
+      "acceptance_rate": 0.3774,
+      "tokens_per_step": 2.0,
+      "total_steps": 418136,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 37,
+      "sim_tick": 38,
+      "acceptance_rate": 0.3733,
+      "tokens_per_step": 1.939,
+      "total_steps": 393799,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 38,
+      "sim_tick": 39,
+      "acceptance_rate": 0.3688,
+      "tokens_per_step": 1.991,
+      "total_steps": 415573,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 39,
+      "sim_tick": 40,
+      "acceptance_rate": 0.365,
+      "tokens_per_step": 1.988,
+      "total_steps": 447741,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 40,
+      "sim_tick": 41,
+      "acceptance_rate": 0.36,
+      "tokens_per_step": 1.907,
+      "total_steps": 413984,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 41,
+      "sim_tick": 42,
+      "acceptance_rate": 0.3937,
+      "tokens_per_step": 2.071,
+      "total_steps": 361505,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 43,
+      "sim_tick": 44,
+      "acceptance_rate": 0.3527,
+      "tokens_per_step": 1.898,
+      "total_steps": 481388,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 44,
+      "sim_tick": 45,
+      "acceptance_rate": 0.3646,
+      "tokens_per_step": 1.909,
+      "total_steps": 514266,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 45,
+      "sim_tick": 46,
+      "acceptance_rate": 0.3559,
+      "tokens_per_step": 1.908,
+      "total_steps": 552966,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 46,
+      "sim_tick": 47,
+      "acceptance_rate": 0.3813,
+      "tokens_per_step": 2.028,
+      "total_steps": 485724,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 48,
+      "sim_tick": 49,
+      "acceptance_rate": 0.3551,
+      "tokens_per_step": 1.906,
+      "total_steps": 604551,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 50,
+      "sim_tick": 51,
+      "acceptance_rate": 0.3758,
+      "tokens_per_step": 2.066,
+      "total_steps": 631392,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 52,
+      "sim_tick": 53,
+      "acceptance_rate": 0.3698,
+      "tokens_per_step": 2.018,
+      "total_steps": 677007,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 56,
+      "sim_tick": 57,
+      "acceptance_rate": 0.3732,
+      "tokens_per_step": 2.024,
+      "total_steps": 750317,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 59,
+      "sim_tick": 60,
+      "acceptance_rate": 0.3825,
+      "tokens_per_step": 2.03,
+      "total_steps": 513700,
+      "label": "prob=0.3"
+    },
+    {
+      "cache_tick": 65,
+      "sim_tick": 66,
+      "acceptance_rate": 0.3932,
+      "tokens_per_step": 2.068,
+      "total_steps": 515745,
+      "label": "prob=0.3"
+    }
+  ],
+  "prob=0.3 + online": [
+    {
+      "cache_tick": 1,
+      "sim_tick": 2,
+      "acceptance_rate": 0.3664,
+      "tokens_per_step": 1.714,
+      "total_steps": 226473,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 2,
+      "sim_tick": 3,
+      "acceptance_rate": 0.3794,
+      "tokens_per_step": 1.782,
+      "total_steps": 241372,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 3,
+      "sim_tick": 4,
+      "acceptance_rate": 0.3764,
+      "tokens_per_step": 1.79,
+      "total_steps": 261863,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 4,
+      "sim_tick": 5,
+      "acceptance_rate": 0.3862,
+      "tokens_per_step": 1.793,
+      "total_steps": 245196,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 5,
+      "sim_tick": 6,
+      "acceptance_rate": 0.3718,
+      "tokens_per_step": 1.74,
+      "total_steps": 254662,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 6,
+      "sim_tick": 7,
+      "acceptance_rate": 0.3879,
+      "tokens_per_step": 1.827,
+      "total_steps": 235113,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 7,
+      "sim_tick": 8,
+      "acceptance_rate": 0.3705,
+      "tokens_per_step": 1.743,
+      "total_steps": 240370,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 8,
+      "sim_tick": 9,
+      "acceptance_rate": 0.3627,
+      "tokens_per_step": 1.735,
+      "total_steps": 248948,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 9,
+      "sim_tick": 10,
+      "acceptance_rate": 0.3763,
+      "tokens_per_step": 1.737,
+      "total_steps": 238781,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 10,
+      "sim_tick": 11,
+      "acceptance_rate": 0.3717,
+      "tokens_per_step": 1.757,
+      "total_steps": 233997,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 11,
+      "sim_tick": 12,
+      "acceptance_rate": 0.3838,
+      "tokens_per_step": 1.817,
+      "total_steps": 262199,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 12,
+      "sim_tick": 13,
+      "acceptance_rate": 0.3838,
+      "tokens_per_step": 1.792,
+      "total_steps": 243968,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 13,
+      "sim_tick": 14,
+      "acceptance_rate": 0.3966,
+      "tokens_per_step": 1.878,
+      "total_steps": 227776,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 14,
+      "sim_tick": 15,
+      "acceptance_rate": 0.3733,
+      "tokens_per_step": 1.778,
+      "total_steps": 236313,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 15,
+      "sim_tick": 16,
+      "acceptance_rate": 0.3977,
+      "tokens_per_step": 1.893,
+      "total_steps": 218316,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 16,
+      "sim_tick": 17,
+      "acceptance_rate": 0.3798,
+      "tokens_per_step": 1.809,
+      "total_steps": 244345,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 17,
+      "sim_tick": 18,
+      "acceptance_rate": 0.4086,
+      "tokens_per_step": 1.954,
+      "total_steps": 243647,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 18,
+      "sim_tick": 19,
+      "acceptance_rate": 0.4292,
+      "tokens_per_step": 2.11,
+      "total_steps": 258751,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 19,
+      "sim_tick": 20,
+      "acceptance_rate": 0.4192,
+      "tokens_per_step": 2.073,
+      "total_steps": 235057,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 20,
+      "sim_tick": 21,
+      "acceptance_rate": 0.4305,
+      "tokens_per_step": 2.133,
+      "total_steps": 240769,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 21,
+      "sim_tick": 22,
+      "acceptance_rate": 0.4216,
+      "tokens_per_step": 2.088,
+      "total_steps": 226840,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 22,
+      "sim_tick": 23,
+      "acceptance_rate": 0.4252,
+      "tokens_per_step": 2.157,
+      "total_steps": 271652,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 23,
+      "sim_tick": 24,
+      "acceptance_rate": 0.4555,
+      "tokens_per_step": 2.293,
+      "total_steps": 260385,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 24,
+      "sim_tick": 25,
+      "acceptance_rate": 0.4514,
+      "tokens_per_step": 2.272,
+      "total_steps": 222973,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 25,
+      "sim_tick": 26,
+      "acceptance_rate": 0.4471,
+      "tokens_per_step": 2.279,
+      "total_steps": 240926,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 26,
+      "sim_tick": 27,
+      "acceptance_rate": 0.4675,
+      "tokens_per_step": 2.383,
+      "total_steps": 254735,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 27,
+      "sim_tick": 28,
+      "acceptance_rate": 0.4486,
+      "tokens_per_step": 2.299,
+      "total_steps": 266724,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 28,
+      "sim_tick": 29,
+      "acceptance_rate": 0.4527,
+      "tokens_per_step": 2.325,
+      "total_steps": 318038,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 29,
+      "sim_tick": 30,
+      "acceptance_rate": 0.4817,
+      "tokens_per_step": 2.497,
+      "total_steps": 287988,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 30,
+      "sim_tick": 31,
+      "acceptance_rate": 0.4829,
+      "tokens_per_step": 2.488,
+      "total_steps": 287337,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 31,
+      "sim_tick": 32,
+      "acceptance_rate": 0.475,
+      "tokens_per_step": 2.441,
+      "total_steps": 254670,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 32,
+      "sim_tick": 33,
+      "acceptance_rate": 0.4707,
+      "tokens_per_step": 2.458,
+      "total_steps": 287747,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 33,
+      "sim_tick": 34,
+      "acceptance_rate": 0.4778,
+      "tokens_per_step": 2.477,
+      "total_steps": 303988,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 34,
+      "sim_tick": 35,
+      "acceptance_rate": 0.4671,
+      "tokens_per_step": 2.445,
+      "total_steps": 298251,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 35,
+      "sim_tick": 36,
+      "acceptance_rate": 0.4529,
+      "tokens_per_step": 2.379,
+      "total_steps": 350644,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 36,
+      "sim_tick": 37,
+      "acceptance_rate": 0.4723,
+      "tokens_per_step": 2.487,
+      "total_steps": 336358,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 37,
+      "sim_tick": 38,
+      "acceptance_rate": 0.4767,
+      "tokens_per_step": 2.483,
+      "total_steps": 307591,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 38,
+      "sim_tick": 39,
+      "acceptance_rate": 0.4558,
+      "tokens_per_step": 2.434,
+      "total_steps": 339946,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 39,
+      "sim_tick": 40,
+      "acceptance_rate": 0.4708,
+      "tokens_per_step": 2.509,
+      "total_steps": 354841,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 40,
+      "sim_tick": 41,
+      "acceptance_rate": 0.4474,
+      "tokens_per_step": 2.323,
+      "total_steps": 339817,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 41,
+      "sim_tick": 42,
+      "acceptance_rate": 0.4727,
+      "tokens_per_step": 2.49,
+      "total_steps": 300690,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 43,
+      "sim_tick": 44,
+      "acceptance_rate": 0.4523,
+      "tokens_per_step": 2.399,
+      "total_steps": 380873,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 44,
+      "sim_tick": 45,
+      "acceptance_rate": 0.4716,
+      "tokens_per_step": 2.455,
+      "total_steps": 400013,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 45,
+      "sim_tick": 46,
+      "acceptance_rate": 0.4659,
+      "tokens_per_step": 2.449,
+      "total_steps": 430745,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 46,
+      "sim_tick": 47,
+      "acceptance_rate": 0.4659,
+      "tokens_per_step": 2.479,
+      "total_steps": 397384,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 48,
+      "sim_tick": 49,
+      "acceptance_rate": 0.4474,
+      "tokens_per_step": 2.387,
+      "total_steps": 482711,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 50,
+      "sim_tick": 51,
+      "acceptance_rate": 0.4605,
+      "tokens_per_step": 2.487,
+      "total_steps": 524592,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 52,
+      "sim_tick": 53,
+      "acceptance_rate": 0.4477,
+      "tokens_per_step": 2.416,
+      "total_steps": 565607,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 56,
+      "sim_tick": 57,
+      "acceptance_rate": 0.4524,
+      "tokens_per_step": 2.425,
+      "total_steps": 626050,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 59,
+      "sim_tick": 60,
+      "acceptance_rate": 0.4569,
+      "tokens_per_step": 2.434,
+      "total_steps": 428407,
+      "label": "prob=0.3 + online"
+    },
+    {
+      "cache_tick": 65,
+      "sim_tick": 66,
+      "acceptance_rate": 0.4548,
+      "tokens_per_step": 2.385,
+      "total_steps": 447043,
+      "label": "prob=0.3 + online"
+    }
+  ],
+  "prob=0.5": [
+    {
+      "cache_tick": 1,
+      "sim_tick": 2,
+      "acceptance_rate": 0.3153,
+      "tokens_per_step": 1.415,
+      "total_steps": 274326,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 2,
+      "sim_tick": 3,
+      "acceptance_rate": 0.2991,
+      "tokens_per_step": 1.399,
+      "total_steps": 307316,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 3,
+      "sim_tick": 4,
+      "acceptance_rate": 0.3106,
+      "tokens_per_step": 1.429,
+      "total_steps": 327965,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 4,
+      "sim_tick": 5,
+      "acceptance_rate": 0.2967,
+      "tokens_per_step": 1.392,
+      "total_steps": 315689,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 5,
+      "sim_tick": 6,
+      "acceptance_rate": 0.3003,
+      "tokens_per_step": 1.396,
+      "total_steps": 317511,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 6,
+      "sim_tick": 7,
+      "acceptance_rate": 0.2999,
+      "tokens_per_step": 1.42,
+      "total_steps": 302445,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 7,
+      "sim_tick": 8,
+      "acceptance_rate": 0.3132,
+      "tokens_per_step": 1.434,
+      "total_steps": 292138,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 8,
+      "sim_tick": 9,
+      "acceptance_rate": 0.3038,
+      "tokens_per_step": 1.409,
+      "total_steps": 306566,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 9,
+      "sim_tick": 10,
+      "acceptance_rate": 0.3134,
+      "tokens_per_step": 1.394,
+      "total_steps": 297414,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 10,
+      "sim_tick": 11,
+      "acceptance_rate": 0.314,
+      "tokens_per_step": 1.424,
+      "total_steps": 288618,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 11,
+      "sim_tick": 12,
+      "acceptance_rate": 0.3282,
+      "tokens_per_step": 1.473,
+      "total_steps": 323479,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 12,
+      "sim_tick": 13,
+      "acceptance_rate": 0.3192,
+      "tokens_per_step": 1.438,
+      "total_steps": 303919,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 13,
+      "sim_tick": 14,
+      "acceptance_rate": 0.339,
+      "tokens_per_step": 1.496,
+      "total_steps": 285953,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 14,
+      "sim_tick": 15,
+      "acceptance_rate": 0.3321,
+      "tokens_per_step": 1.477,
+      "total_steps": 284447,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 15,
+      "sim_tick": 16,
+      "acceptance_rate": 0.3505,
+      "tokens_per_step": 1.551,
+      "total_steps": 266540,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 16,
+      "sim_tick": 17,
+      "acceptance_rate": 0.342,
+      "tokens_per_step": 1.498,
+      "total_steps": 295147,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 17,
+      "sim_tick": 18,
+      "acceptance_rate": 0.3505,
+      "tokens_per_step": 1.561,
+      "total_steps": 305099,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 18,
+      "sim_tick": 19,
+      "acceptance_rate": 0.3801,
+      "tokens_per_step": 1.682,
+      "total_steps": 324604,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 19,
+      "sim_tick": 20,
+      "acceptance_rate": 0.3607,
+      "tokens_per_step": 1.624,
+      "total_steps": 300147,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 20,
+      "sim_tick": 21,
+      "acceptance_rate": 0.3691,
+      "tokens_per_step": 1.675,
+      "total_steps": 306600,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 21,
+      "sim_tick": 22,
+      "acceptance_rate": 0.3736,
+      "tokens_per_step": 1.682,
+      "total_steps": 281572,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 22,
+      "sim_tick": 23,
+      "acceptance_rate": 0.3742,
+      "tokens_per_step": 1.704,
+      "total_steps": 343883,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 23,
+      "sim_tick": 24,
+      "acceptance_rate": 0.4035,
+      "tokens_per_step": 1.795,
+      "total_steps": 332605,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 24,
+      "sim_tick": 25,
+      "acceptance_rate": 0.4041,
+      "tokens_per_step": 1.818,
+      "total_steps": 278660,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 25,
+      "sim_tick": 26,
+      "acceptance_rate": 0.4064,
+      "tokens_per_step": 1.829,
+      "total_steps": 300280,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 26,
+      "sim_tick": 27,
+      "acceptance_rate": 0.3938,
+      "tokens_per_step": 1.818,
+      "total_steps": 333903,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 27,
+      "sim_tick": 28,
+      "acceptance_rate": 0.3962,
+      "tokens_per_step": 1.82,
+      "total_steps": 336987,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 28,
+      "sim_tick": 29,
+      "acceptance_rate": 0.3792,
+      "tokens_per_step": 1.765,
+      "total_steps": 419009,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 29,
+      "sim_tick": 30,
+      "acceptance_rate": 0.4125,
+      "tokens_per_step": 1.914,
+      "total_steps": 375720,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 30,
+      "sim_tick": 31,
+      "acceptance_rate": 0.4079,
+      "tokens_per_step": 1.858,
+      "total_steps": 384724,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 31,
+      "sim_tick": 32,
+      "acceptance_rate": 0.4168,
+      "tokens_per_step": 1.909,
+      "total_steps": 325588,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 32,
+      "sim_tick": 33,
+      "acceptance_rate": 0.4108,
+      "tokens_per_step": 1.888,
+      "total_steps": 374687,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 33,
+      "sim_tick": 34,
+      "acceptance_rate": 0.4154,
+      "tokens_per_step": 1.918,
+      "total_steps": 392682,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 34,
+      "sim_tick": 35,
+      "acceptance_rate": 0.4213,
+      "tokens_per_step": 1.939,
+      "total_steps": 376032,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 35,
+      "sim_tick": 36,
+      "acceptance_rate": 0.3786,
+      "tokens_per_step": 1.795,
+      "total_steps": 464706,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 36,
+      "sim_tick": 37,
+      "acceptance_rate": 0.4191,
+      "tokens_per_step": 1.929,
+      "total_steps": 433584,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 37,
+      "sim_tick": 38,
+      "acceptance_rate": 0.4142,
+      "tokens_per_step": 1.871,
+      "total_steps": 408086,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 38,
+      "sim_tick": 39,
+      "acceptance_rate": 0.4093,
+      "tokens_per_step": 1.919,
+      "total_steps": 431080,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 39,
+      "sim_tick": 40,
+      "acceptance_rate": 0.405,
+      "tokens_per_step": 1.919,
+      "total_steps": 463809,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 40,
+      "sim_tick": 41,
+      "acceptance_rate": 0.3991,
+      "tokens_per_step": 1.841,
+      "total_steps": 428792,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 41,
+      "sim_tick": 42,
+      "acceptance_rate": 0.4346,
+      "tokens_per_step": 1.995,
+      "total_steps": 375405,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 43,
+      "sim_tick": 44,
+      "acceptance_rate": 0.3891,
+      "tokens_per_step": 1.833,
+      "total_steps": 498460,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 44,
+      "sim_tick": 45,
+      "acceptance_rate": 0.4077,
+      "tokens_per_step": 1.852,
+      "total_steps": 530095,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 45,
+      "sim_tick": 46,
+      "acceptance_rate": 0.3949,
+      "tokens_per_step": 1.844,
+      "total_steps": 572118,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 46,
+      "sim_tick": 47,
+      "acceptance_rate": 0.4212,
+      "tokens_per_step": 1.962,
+      "total_steps": 502295,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 48,
+      "sim_tick": 49,
+      "acceptance_rate": 0.394,
+      "tokens_per_step": 1.839,
+      "total_steps": 626534,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 50,
+      "sim_tick": 51,
+      "acceptance_rate": 0.4171,
+      "tokens_per_step": 1.986,
+      "total_steps": 656792,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 52,
+      "sim_tick": 53,
+      "acceptance_rate": 0.4124,
+      "tokens_per_step": 1.944,
+      "total_steps": 703031,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 56,
+      "sim_tick": 57,
+      "acceptance_rate": 0.4159,
+      "tokens_per_step": 1.952,
+      "total_steps": 778083,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 59,
+      "sim_tick": 60,
+      "acceptance_rate": 0.4237,
+      "tokens_per_step": 1.954,
+      "total_steps": 533555,
+      "label": "prob=0.5"
+    },
+    {
+      "cache_tick": 65,
+      "sim_tick": 66,
+      "acceptance_rate": 0.4386,
+      "tokens_per_step": 1.994,
+      "total_steps": 534837,
+      "label": "prob=0.5"
+    }
+  ],
+  "prob=0.5 + online": [
+    {
+      "cache_tick": 1,
+      "sim_tick": 2,
+      "acceptance_rate": 0.4334,
+      "tokens_per_step": 1.653,
+      "total_steps": 234801,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 2,
+      "sim_tick": 3,
+      "acceptance_rate": 0.4466,
+      "tokens_per_step": 1.718,
+      "total_steps": 250368,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 3,
+      "sim_tick": 4,
+      "acceptance_rate": 0.4438,
+      "tokens_per_step": 1.719,
+      "total_steps": 272666,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 4,
+      "sim_tick": 5,
+      "acceptance_rate": 0.4562,
+      "tokens_per_step": 1.729,
+      "total_steps": 254308,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 5,
+      "sim_tick": 6,
+      "acceptance_rate": 0.4392,
+      "tokens_per_step": 1.676,
+      "total_steps": 264509,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 6,
+      "sim_tick": 7,
+      "acceptance_rate": 0.4557,
+      "tokens_per_step": 1.757,
+      "total_steps": 244461,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 7,
+      "sim_tick": 8,
+      "acceptance_rate": 0.4365,
+      "tokens_per_step": 1.679,
+      "total_steps": 249471,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 8,
+      "sim_tick": 9,
+      "acceptance_rate": 0.4301,
+      "tokens_per_step": 1.67,
+      "total_steps": 258601,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 9,
+      "sim_tick": 10,
+      "acceptance_rate": 0.4433,
+      "tokens_per_step": 1.676,
+      "total_steps": 247473,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 10,
+      "sim_tick": 11,
+      "acceptance_rate": 0.4397,
+      "tokens_per_step": 1.691,
+      "total_steps": 243130,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 11,
+      "sim_tick": 12,
+      "acceptance_rate": 0.4523,
+      "tokens_per_step": 1.748,
+      "total_steps": 272581,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 12,
+      "sim_tick": 13,
+      "acceptance_rate": 0.4523,
+      "tokens_per_step": 1.726,
+      "total_steps": 253286,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 13,
+      "sim_tick": 14,
+      "acceptance_rate": 0.4664,
+      "tokens_per_step": 1.804,
+      "total_steps": 237100,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 14,
+      "sim_tick": 15,
+      "acceptance_rate": 0.4397,
+      "tokens_per_step": 1.713,
+      "total_steps": 245295,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 15,
+      "sim_tick": 16,
+      "acceptance_rate": 0.4672,
+      "tokens_per_step": 1.817,
+      "total_steps": 227468,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 16,
+      "sim_tick": 17,
+      "acceptance_rate": 0.4463,
+      "tokens_per_step": 1.736,
+      "total_steps": 254599,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 17,
+      "sim_tick": 18,
+      "acceptance_rate": 0.4786,
+      "tokens_per_step": 1.874,
+      "total_steps": 254024,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 18,
+      "sim_tick": 19,
+      "acceptance_rate": 0.5051,
+      "tokens_per_step": 2.016,
+      "total_steps": 270915,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 19,
+      "sim_tick": 20,
+      "acceptance_rate": 0.4897,
+      "tokens_per_step": 1.984,
+      "total_steps": 245640,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 20,
+      "sim_tick": 21,
+      "acceptance_rate": 0.5026,
+      "tokens_per_step": 2.037,
+      "total_steps": 252173,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 21,
+      "sim_tick": 22,
+      "acceptance_rate": 0.493,
+      "tokens_per_step": 1.994,
+      "total_steps": 237474,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 22,
+      "sim_tick": 23,
+      "acceptance_rate": 0.4981,
+      "tokens_per_step": 2.056,
+      "total_steps": 285002,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 23,
+      "sim_tick": 24,
+      "acceptance_rate": 0.5306,
+      "tokens_per_step": 2.182,
+      "total_steps": 273675,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 24,
+      "sim_tick": 25,
+      "acceptance_rate": 0.524,
+      "tokens_per_step": 2.163,
+      "total_steps": 234230,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 25,
+      "sim_tick": 26,
+      "acceptance_rate": 0.5215,
+      "tokens_per_step": 2.166,
+      "total_steps": 253473,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 26,
+      "sim_tick": 27,
+      "acceptance_rate": 0.5425,
+      "tokens_per_step": 2.268,
+      "total_steps": 267630,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 27,
+      "sim_tick": 28,
+      "acceptance_rate": 0.5229,
+      "tokens_per_step": 2.187,
+      "total_steps": 280438,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 28,
+      "sim_tick": 29,
+      "acceptance_rate": 0.5286,
+      "tokens_per_step": 2.211,
+      "total_steps": 334505,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 29,
+      "sim_tick": 30,
+      "acceptance_rate": 0.5597,
+      "tokens_per_step": 2.369,
+      "total_steps": 303465,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 30,
+      "sim_tick": 31,
+      "acceptance_rate": 0.56,
+      "tokens_per_step": 2.362,
+      "total_steps": 302625,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 31,
+      "sim_tick": 32,
+      "acceptance_rate": 0.551,
+      "tokens_per_step": 2.319,
+      "total_steps": 268091,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 32,
+      "sim_tick": 33,
+      "acceptance_rate": 0.5484,
+      "tokens_per_step": 2.329,
+      "total_steps": 303689,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 33,
+      "sim_tick": 34,
+      "acceptance_rate": 0.5535,
+      "tokens_per_step": 2.342,
+      "total_steps": 321564,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 34,
+      "sim_tick": 35,
+      "acceptance_rate": 0.5446,
+      "tokens_per_step": 2.312,
+      "total_steps": 315394,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 35,
+      "sim_tick": 36,
+      "acceptance_rate": 0.5298,
+      "tokens_per_step": 2.254,
+      "total_steps": 370092,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 36,
+      "sim_tick": 37,
+      "acceptance_rate": 0.5497,
+      "tokens_per_step": 2.352,
+      "total_steps": 355641,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 37,
+      "sim_tick": 38,
+      "acceptance_rate": 0.5535,
+      "tokens_per_step": 2.352,
+      "total_steps": 324732,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 38,
+      "sim_tick": 39,
+      "acceptance_rate": 0.5333,
+      "tokens_per_step": 2.3,
+      "total_steps": 359712,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 39,
+      "sim_tick": 40,
+      "acceptance_rate": 0.5494,
+      "tokens_per_step": 2.374,
+      "total_steps": 375008,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 40,
+      "sim_tick": 41,
+      "acceptance_rate": 0.5232,
+      "tokens_per_step": 2.2,
+      "total_steps": 358818,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 41,
+      "sim_tick": 42,
+      "acceptance_rate": 0.5508,
+      "tokens_per_step": 2.355,
+      "total_steps": 317911,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 43,
+      "sim_tick": 44,
+      "acceptance_rate": 0.5289,
+      "tokens_per_step": 2.273,
+      "total_steps": 402140,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 44,
+      "sim_tick": 45,
+      "acceptance_rate": 0.5483,
+      "tokens_per_step": 2.329,
+      "total_steps": 421715,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 45,
+      "sim_tick": 46,
+      "acceptance_rate": 0.5425,
+      "tokens_per_step": 2.32,
+      "total_steps": 454760,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 46,
+      "sim_tick": 47,
+      "acceptance_rate": 0.5416,
+      "tokens_per_step": 2.346,
+      "total_steps": 419905,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 48,
+      "sim_tick": 49,
+      "acceptance_rate": 0.524,
+      "tokens_per_step": 2.258,
+      "total_steps": 510203,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 50,
+      "sim_tick": 51,
+      "acceptance_rate": 0.5384,
+      "tokens_per_step": 2.344,
+      "total_steps": 556571,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 52,
+      "sim_tick": 53,
+      "acceptance_rate": 0.5262,
+      "tokens_per_step": 2.278,
+      "total_steps": 599988,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 56,
+      "sim_tick": 57,
+      "acceptance_rate": 0.5313,
+      "tokens_per_step": 2.286,
+      "total_steps": 664146,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 59,
+      "sim_tick": 60,
+      "acceptance_rate": 0.5339,
+      "tokens_per_step": 2.299,
+      "total_steps": 453562,
+      "label": "prob=0.5 + online"
+    },
+    {
+      "cache_tick": 65,
+      "sim_tick": 66,
+      "acceptance_rate": 0.5327,
+      "tokens_per_step": 2.254,
+      "total_steps": 473053,
+      "label": "prob=0.5 + online"
+    }
+  ]
+}
