@@ -240,6 +240,31 @@ class SharedMemoryCacheManager:
         )
         logger.info(f"Server addresses: {server_addresses}")
 
+    def _normalize_ip(self, ip: str) -> tuple[str, bool]:
+        """Normalize IP address and determine if it's IPv6.
+
+        Handles various input formats:
+        - Raw IPv6: 2605:340:cd51:7700::1
+        - Bracketed IPv6: [2605:340:cd51:7700::1]
+        - IPv4: 192.168.1.100
+
+        Returns:
+            Tuple of (normalized_ip, is_ipv6)
+        """
+        import ipaddress
+
+        # Strip brackets and whitespace
+        ip = ip.strip().strip('[]')
+
+        try:
+            addr = ipaddress.ip_address(ip)
+            return str(addr), isinstance(addr, ipaddress.IPv6Address)
+        except ValueError:
+            # If ipaddress parsing fails, fall back to heuristic
+            logger.warning(f"Could not parse IP address '{ip}', using heuristic")
+            is_ipv6 = ':' in ip
+            return ip, is_ipv6
+
     def _get_server_addresses(self) -> List[str]:
         """Get formatted gRPC addresses for all cache servers.
 
@@ -254,13 +279,16 @@ class SharedMemoryCacheManager:
         for s in self._cache_servers:
             ip = s['ip']
             port = s['port']
+
+            # Normalize IP and detect type
+            ip, is_ipv6 = self._normalize_ip(ip)
+
             # Use gRPC URI scheme prefixes for direct address resolution
-            if ":" in ip:
-                # IPv6 address - use ipv6: scheme with brackets
+            if is_ipv6:
                 addresses.append(f"ipv6:[{ip}]:{port}")
             else:
-                # IPv4 address - use ipv4: scheme without brackets
                 addresses.append(f"ipv4:{ip}:{port}")
+
         return addresses
 
     @property

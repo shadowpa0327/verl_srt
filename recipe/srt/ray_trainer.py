@@ -1189,6 +1189,17 @@ class SRTRayPPOTrainer(RayPPOTrainer):
 
         # Build runahead config from trainer settings
         runahead_settings = self.config.trainer.get("runahead", {})
+        primary_n = self.config.actor_rollout_ref.rollout.n
+
+        # Resolve secondary_n: None means use primary_n
+        secondary_n_config = runahead_settings.get("secondary_n", None)
+        if secondary_n_config is None:
+            secondary_n = primary_n
+        else:
+            secondary_n = secondary_n_config
+            if secondary_n > primary_n:
+                print(f"WARNING: secondary_n ({secondary_n}) > primary rollout.n ({primary_n})")
+
         runahead_config = RunaheadConfig(
             enabled=True,
             load_threshold=runahead_settings.get("load_threshold", 32),
@@ -1200,10 +1211,12 @@ class SRTRayPPOTrainer(RayPPOTrainer):
             wait_for_primary_start=runahead_settings.get("wait_for_primary_start", True),
             primary_priority=runahead_settings.get("primary_priority", 0),
             secondary_priority=runahead_settings.get("secondary_priority", 10),
+            secondary_n=secondary_n,
         )
 
         print(f"SRT Runahead: Enabled with config: load_threshold={runahead_config.load_threshold}, "
-              f"secondary_priority={runahead_config.secondary_priority}")
+              f"secondary_priority={runahead_config.secondary_priority}, "
+              f"secondary_n={secondary_n} (primary_n={primary_n})")
 
         # add tqdm
         progress_bar = tqdm(total=self.total_training_steps, initial=self.global_steps, desc="Training (Runahead)")
@@ -1270,7 +1283,7 @@ class SRTRayPPOTrainer(RayPPOTrainer):
                     )
                     next_gen_batch = self._get_gen_batch(next_batch)
                     secondary_prompts = next_gen_batch.repeat(
-                        repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True
+                        repeat_times=runahead_config.secondary_n, interleave=True
                     )
 
                 is_last_step = self.global_steps >= self.total_training_steps
@@ -1316,6 +1329,11 @@ class SRTRayPPOTrainer(RayPPOTrainer):
                                 metrics["runahead/completion_rate"] = (
                                     runahead_metrics.secondary_completed / total_secondary
                                 )
+
+                            # Log batch configuration metrics
+                            metrics["runahead/secondary_n"] = runahead_config.secondary_n
+                            metrics["runahead/primary_n"] = primary_n
+                            metrics["runahead/unique_prompts_secondary"] = len(next_gen_batch.batch)
 
                             # SRT: Update suffix trees with secondary outputs
                             # This populates the cache for the NEXT tick when this batch becomes primary

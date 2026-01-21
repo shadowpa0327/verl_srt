@@ -12,6 +12,11 @@
 # - Uses generate_sequences_with_runahead() instead of generate_sequences()
 # - Secondary outputs populate suffix cache for next tick
 # - Logs runahead metrics: secondary_started, secondary_completed, etc.
+#
+# Secondary batch strategy options (via +trainer.runahead.secondary_n):
+# - Not set (default): Uses primary rollout.n - "depth" strategy
+# - secondary_n=1: More unique prompts, 1 sample each - "breadth" strategy
+# - secondary_n=N: Balanced approach - "hybrid" strategy
 
 set -x
 
@@ -66,6 +71,7 @@ python3 -m recipe.srt.main_ppo \
     +trainer.runahead.max_queue_size=256 \
     +trainer.runahead.secondary_priority=10 \
     +trainer.runahead.abort_grace_s=1.0 \
+    +trainer.runahead.secondary_n=1 \
     +actor_rollout_ref.rollout.enable_srt=true \
     +actor_rollout_ref.rollout.srt_max_tree_depth=32 \
     +actor_rollout_ref.rollout.srt_hash_token_count=64 \
