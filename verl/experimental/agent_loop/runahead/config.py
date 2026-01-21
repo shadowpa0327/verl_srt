@@ -18,6 +18,7 @@ Run-ahead rollout fills GPU bubbles by speculatively executing secondary (future
 requests while waiting for primary requests to complete.
 """
 from dataclasses import dataclass
+from typing import Optional
 
 @dataclass
 class RunaheadConfig:
@@ -49,6 +50,10 @@ class RunaheadConfig:
         wait_for_primary_start: If True, delay secondary submission until at least one
             primary request has reached the router (prevents a startup race where
             server_load doesn't yet reflect primary workload).
+        secondary_n: Number of responses per prompt for secondary (runahead) batches.
+            If None (default), uses the primary batch's rollout.n for backward compatibility.
+            Set to a lower value (e.g., 1) to cover more unique prompts ("breadth" strategy)
+            or keep at None/same as primary for deeper cache population ("depth" strategy).
     """
 
     enabled: bool = False
@@ -77,3 +82,9 @@ class RunaheadConfig:
     # requests are preempted when KV cache is exhausted.
     primary_priority: int = 0        # Primary batch requests get highest priority
     secondary_priority: int = 10     # Runahead requests get lower priority
+
+    # Secondary batch configuration
+    # Controls how many responses per prompt to generate in secondary (runahead) batches.
+    # None = use primary rollout.n (default, backward compatible)
+    # Set to 1 for "breadth" strategy (more unique prompts, one sample each)
+    secondary_n: Optional[int] = None
