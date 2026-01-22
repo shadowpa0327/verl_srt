@@ -25,6 +25,15 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+try:
+    import matplotlib
+    matplotlib.use('Agg')  # Non-interactive backend
+    import matplotlib.pyplot as plt
+    import numpy as np
+    MATPLOTLIB_AVAILABLE = True
+except ImportError:
+    MATPLOTLIB_AVAILABLE = False
+
 from transformers import AutoTokenizer
 
 
@@ -387,6 +396,335 @@ def analyze_runahead_correlation(
     }
 
 
+def compare_correlation_methods(
+    primary_by_step: Dict[int, Dict[str, List[int]]],
+    secondary_by_step: Dict[int, Dict[str, List[int]]],
+    min_samples: int = 4
+) -> Dict:
+    """Compare grouped (per-prompt mean) vs individual sample correlation.
+
+    Method 1: Mean per prompt - each prompt is ONE data point
+              (32 data points per step if 32 prompts)
+
+    Method 2: Individual sample pairs - all sample combinations
+              (~8000 data points per step if 16x16 samples x 32 prompts)
+
+    Returns per-step correlations for both methods.
+    """
+    step_results = []
+
+    for sec_step in sorted(secondary_by_step.keys()):
+        pri_step = sec_step + 1
+
+        if pri_step not in primary_by_step:
+            continue
+
+        sec_prompts = secondary_by_step[sec_step]
+        pri_prompts = primary_by_step[pri_step]
+        common = set(sec_prompts.keys()) & set(pri_prompts.keys())
+
+        if len(common) < 10:
+            continue
+
+        # Method 1: Grouped (per-prompt mean)
+        grouped_pairs = []
+        for prompt_hash in common:
+            sec_lens = sec_prompts[prompt_hash]
+            pri_lens = pri_prompts[prompt_hash]
+
+            if len(sec_lens) >= min_samples and len(pri_lens) >= min_samples:
+                sec_mean = statistics.mean(sec_lens)
+                pri_mean = statistics.mean(pri_lens)
+                grouped_pairs.append((sec_mean, pri_mean))
+
+        # Method 2: Individual sample pairs (sample the mean cross-product)
+        individual_pairs = []
+        for prompt_hash in common:
+            sec_lens = sec_prompts[prompt_hash]
+            pri_lens = pri_prompts[prompt_hash]
+
+            if len(sec_lens) >= min_samples and len(pri_lens) >= min_samples:
+                # For each secondary sample, pair with mean of primary (and vice versa)
+                # This avoids O(n^2) explosion while still measuring individual variance
+                pri_mean = statistics.mean(pri_lens)
+                for sec_val in sec_lens:
+                    individual_pairs.append((sec_val, pri_mean))
+
+        if len(grouped_pairs) >= 10 and len(individual_pairs) >= 10:
+            grouped_pearson, _ = calculate_correlation(grouped_pairs)
+            individual_pearson, _ = calculate_correlation(individual_pairs)
+
+            step_results.append({
+                'sec_step': sec_step,
+                'pri_step': pri_step,
+                'grouped_r': grouped_pearson,
+                'individual_r': individual_pearson,
+                'grouped_n': len(grouped_pairs),
+                'individual_n': len(individual_pairs),
+            })
+
+    if not step_results:
+        return {'error': 'No steps with sufficient data'}
+
+    grouped_rs = [r['grouped_r'] for r in step_results]
+    individual_rs = [r['individual_r'] for r in step_results]
+
+    return {
+        'step_results': step_results,
+        'grouped_avg': statistics.mean(grouped_rs),
+        'individual_avg': statistics.mean(individual_rs),
+        'grouped_median': statistics.median(grouped_rs),
+        'individual_median': statistics.median(individual_rs),
+        'interpretation': (
+            "Grouped correlation is high: runahead predicts WHICH PROMPTS will be long. "
+            "Individual correlation is low: runahead does NOT predict individual sample length."
+            if statistics.mean(grouped_rs) > statistics.mean(individual_rs) + 0.2
+            else "Both methods show similar correlation."
+        ),
+    }
+
+
+def plot_correlation_over_steps(
+    step_correlations: List[Dict],
+    output_dir: Path,
+    dpi: int = 150
+) -> Optional[Path]:
+    """Plot Pearson correlation over training steps.
+
+    Creates line plot with:
+    - Correlation values per step
+    - Linear trend line
+    - Horizontal threshold lines at r=0.5 and r=0.7
+    """
+    if not MATPLOTLIB_AVAILABLE:
+        print("Warning: matplotlib not available, skipping plots")
+        return None
+
+    if not step_correlations:
+        return None
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    steps = [sc['sec_step'] for sc in step_correlations]
+    correlations = [sc['pearson'] for sc in step_correlations]
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    # Main correlation line
+    ax.plot(steps, correlations, 'b-o', linewidth=2, markersize=4, label='Pearson r')
+
+    # Linear trend line
+    if len(steps) >= 2:
+        z = np.polyfit(steps, correlations, 1)
+        p = np.poly1d(z)
+        ax.plot(steps, p(steps), 'r--', alpha=0.7, linewidth=1.5,
+                label=f'Trend (slope={z[0]:.4f})')
+
+    # Threshold lines
+    ax.axhline(y=0.5, color='orange', linestyle=':', alpha=0.7, label='r=0.5')
+    ax.axhline(y=0.7, color='green', linestyle=':', alpha=0.7, label='r=0.7')
+
+    ax.set_xlabel('Training Step (Secondary)', fontsize=12)
+    ax.set_ylabel('Pearson Correlation (r)', fontsize=12)
+    ax.set_title('Runahead Prediction: Correlation Over Training Steps\n(Secondary[N] vs Primary[N+1])', fontsize=14)
+    ax.legend(loc='lower right')
+    ax.grid(True, alpha=0.3)
+    ax.set_ylim(-0.1, 1.1)
+
+    output_path = output_dir / 'correlation_over_steps.png'
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=dpi, bbox_inches='tight')
+    plt.close(fig)
+
+    return output_path
+
+
+def plot_scatter_examples(
+    step_correlations: List[Dict],
+    primary_by_step: Dict[int, Dict[str, List[int]]],
+    secondary_by_step: Dict[int, Dict[str, List[int]]],
+    output_dir: Path,
+    dpi: int = 150,
+    min_samples: int = 4
+) -> Optional[Path]:
+    """Plot 2x2 grid with correlation trend + 3 scatter examples.
+
+    Layout:
+    - Top-left: Correlation over steps (same as plot_correlation_over_steps)
+    - Top-right: Early training scatter (e.g., step 1->2)
+    - Bottom-left: Mid training scatter
+    - Bottom-right: Late training scatter
+    """
+    if not MATPLOTLIB_AVAILABLE:
+        return None
+
+    if not step_correlations:
+        return None
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Select representative steps
+    sorted_steps = sorted(step_correlations, key=lambda x: x['sec_step'])
+    n = len(sorted_steps)
+    early_idx = 0
+    mid_idx = n // 2
+    late_idx = n - 1
+
+    example_steps = [
+        sorted_steps[early_idx],
+        sorted_steps[mid_idx],
+        sorted_steps[late_idx],
+    ]
+
+    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+
+    # Top-left: Correlation over steps
+    ax = axes[0, 0]
+    steps = [sc['sec_step'] for sc in step_correlations]
+    correlations = [sc['pearson'] for sc in step_correlations]
+    ax.plot(steps, correlations, 'b-o', linewidth=2, markersize=4)
+
+    # Trend line
+    if len(steps) >= 2:
+        z = np.polyfit(steps, correlations, 1)
+        p = np.poly1d(z)
+        ax.plot(steps, p(steps), 'r--', alpha=0.7, linewidth=1.5)
+
+    ax.axhline(y=0.5, color='orange', linestyle=':', alpha=0.7)
+    ax.axhline(y=0.7, color='green', linestyle=':', alpha=0.7)
+    ax.set_xlabel('Training Step', fontsize=10)
+    ax.set_ylabel('Pearson r', fontsize=10)
+    ax.set_title('Correlation Over Training', fontsize=11)
+    ax.grid(True, alpha=0.3)
+    ax.set_ylim(-0.1, 1.1)
+
+    # Scatter plots for early, mid, late
+    positions = [(0, 1), (1, 0), (1, 1)]
+    labels = ['Early Training', 'Mid Training', 'Late Training']
+
+    for (row, col), step_data, label in zip(positions, example_steps, labels):
+        ax = axes[row, col]
+        sec_step = step_data['sec_step']
+        pri_step = step_data['pri_step']
+
+        # Get paired data for this step
+        sec_prompts = secondary_by_step.get(sec_step, {})
+        pri_prompts = primary_by_step.get(pri_step, {})
+        common = set(sec_prompts.keys()) & set(pri_prompts.keys())
+
+        sec_means = []
+        pri_means = []
+        for prompt_hash in common:
+            sec_lens = sec_prompts[prompt_hash]
+            pri_lens = pri_prompts[prompt_hash]
+            if len(sec_lens) >= min_samples and len(pri_lens) >= min_samples:
+                sec_means.append(statistics.mean(sec_lens))
+                pri_means.append(statistics.mean(pri_lens))
+
+        if sec_means:
+            ax.scatter(sec_means, pri_means, alpha=0.6, s=30)
+
+            # Add diagonal reference line
+            max_val = max(max(sec_means), max(pri_means))
+            min_val = min(min(sec_means), min(pri_means))
+            ax.plot([min_val, max_val], [min_val, max_val], 'r--', alpha=0.5, linewidth=1)
+
+        ax.set_xlabel(f'Secondary[{sec_step}] tokens', fontsize=10)
+        ax.set_ylabel(f'Primary[{pri_step}] tokens', fontsize=10)
+        ax.set_title(f'{label}: r={step_data["pearson"]:.3f}', fontsize=11)
+        ax.grid(True, alpha=0.3)
+
+    fig.suptitle('Runahead Prediction Analysis: Secondary[N] -> Primary[N+1]', fontsize=14, y=1.02)
+    fig.tight_layout()
+
+    output_path = output_dir / 'scatter_examples.png'
+    fig.savefig(output_path, dpi=dpi, bbox_inches='tight')
+    plt.close(fig)
+
+    return output_path
+
+
+def plot_all_steps_grid(
+    step_correlations: List[Dict],
+    primary_by_step: Dict[int, Dict[str, List[int]]],
+    secondary_by_step: Dict[int, Dict[str, List[int]]],
+    output_dir: Path,
+    dpi: int = 150,
+    min_samples: int = 4
+) -> Optional[Path]:
+    """Plot scatter grid for all step transitions.
+
+    Creates 4xN grid showing all available steps.
+    Each subplot shows runahead vs primary scatter with r value.
+    """
+    if not MATPLOTLIB_AVAILABLE:
+        return None
+
+    if not step_correlations:
+        return None
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    n_steps = len(step_correlations)
+    n_cols = 4
+    n_rows = (n_steps + n_cols - 1) // n_cols
+
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 3.5 * n_rows))
+
+    # Flatten axes for easy iteration
+    if n_rows == 1:
+        axes = axes.reshape(1, -1)
+
+    sorted_steps = sorted(step_correlations, key=lambda x: x['sec_step'])
+
+    for idx, step_data in enumerate(sorted_steps):
+        row = idx // n_cols
+        col = idx % n_cols
+        ax = axes[row, col]
+
+        sec_step = step_data['sec_step']
+        pri_step = step_data['pri_step']
+
+        # Get paired data
+        sec_prompts = secondary_by_step.get(sec_step, {})
+        pri_prompts = primary_by_step.get(pri_step, {})
+        common = set(sec_prompts.keys()) & set(pri_prompts.keys())
+
+        sec_means = []
+        pri_means = []
+        for prompt_hash in common:
+            sec_lens = sec_prompts[prompt_hash]
+            pri_lens = pri_prompts[prompt_hash]
+            if len(sec_lens) >= min_samples and len(pri_lens) >= min_samples:
+                sec_means.append(statistics.mean(sec_lens))
+                pri_means.append(statistics.mean(pri_lens))
+
+        if sec_means:
+            ax.scatter(sec_means, pri_means, alpha=0.5, s=15)
+            max_val = max(max(sec_means), max(pri_means))
+            min_val = min(min(sec_means), min(pri_means))
+            ax.plot([min_val, max_val], [min_val, max_val], 'r--', alpha=0.4, linewidth=1)
+
+        ax.set_title(f'{sec_step}->{pri_step}: r={step_data["pearson"]:.2f}', fontsize=9)
+        ax.tick_params(axis='both', labelsize=7)
+        ax.grid(True, alpha=0.2)
+
+    # Hide empty subplots
+    for idx in range(n_steps, n_rows * n_cols):
+        row = idx // n_cols
+        col = idx % n_cols
+        axes[row, col].set_visible(False)
+
+    fig.suptitle('All Step Transitions: Secondary[N] -> Primary[N+1]', fontsize=14)
+    fig.tight_layout()
+
+    output_path = output_dir / 'all_steps_grid.png'
+    fig.savefig(output_path, dpi=dpi, bbox_inches='tight')
+    plt.close(fig)
+
+    return output_path
+
+
 def print_results(same_step: Dict, runahead: Dict):
     """Print analysis results to console."""
 
@@ -484,6 +822,22 @@ def main():
         "--verbose", action="store_true",
         help="Print progress information"
     )
+    parser.add_argument(
+        "--plot", action="store_true",
+        help="Generate visualization plots"
+    )
+    parser.add_argument(
+        "--output_dir", type=str, default="./prediction_plots",
+        help="Directory for saving plots (default: ./prediction_plots)"
+    )
+    parser.add_argument(
+        "--dpi", type=int, default=150,
+        help="Plot resolution (default: 150)"
+    )
+    parser.add_argument(
+        "--compare_methods", action="store_true",
+        help="Compare grouped vs individual sample correlation methods"
+    )
 
     args = parser.parse_args()
 
@@ -507,6 +861,63 @@ def main():
 
     print_results(same_step_analysis, runahead_analysis)
 
+    # Method comparison
+    method_comparison = None
+    if args.compare_methods:
+        print("\nComparing correlation methods...")
+        method_comparison = compare_correlation_methods(
+            primary_by_step, secondary_by_step, min_samples=args.min_samples
+        )
+        if 'error' not in method_comparison:
+            print("\n" + "=" * 80)
+            print("CORRELATION METHOD COMPARISON")
+            print("=" * 80)
+            print(f"\nMethod 1 (Mean per prompt): Overall avg r = {method_comparison['grouped_avg']:.3f}")
+            print(f"Method 2 (Individual pairs): Overall avg r = {method_comparison['individual_avg']:.3f}")
+            print(f"\nInterpretation:")
+            print(f"  {method_comparison['interpretation']}")
+
+            print("\nPer-step comparison:")
+            print(f"  {'Step':<12} {'Grouped r':<12} {'Individual r':<12}")
+            print("  " + "-" * 36)
+            for r in method_comparison['step_results'][:10]:  # Show first 10
+                print(f"  {r['sec_step']}->{r['pri_step']:<6} {r['grouped_r']:<12.3f} {r['individual_r']:<12.3f}")
+            if len(method_comparison['step_results']) > 10:
+                print(f"  ... ({len(method_comparison['step_results']) - 10} more steps)")
+
+    # Generate plots
+    if args.plot:
+        output_dir = Path(args.output_dir)
+        print(f"\nGenerating plots in {output_dir}...")
+
+        step_correlations = runahead_analysis.get('step_correlations', [])
+
+        if not MATPLOTLIB_AVAILABLE:
+            print("Warning: matplotlib not available, cannot generate plots")
+        elif step_correlations:
+            # Plot 1: Correlation over steps
+            path1 = plot_correlation_over_steps(step_correlations, output_dir, args.dpi)
+            if path1:
+                print(f"  Generated: {path1}")
+
+            # Plot 2: Scatter examples (2x2 grid)
+            path2 = plot_scatter_examples(
+                step_correlations, primary_by_step, secondary_by_step,
+                output_dir, args.dpi, args.min_samples
+            )
+            if path2:
+                print(f"  Generated: {path2}")
+
+            # Plot 3: All steps grid
+            path3 = plot_all_steps_grid(
+                step_correlations, primary_by_step, secondary_by_step,
+                output_dir, args.dpi, args.min_samples
+            )
+            if path3:
+                print(f"  Generated: {path3}")
+        else:
+            print("  No step correlations available for plotting")
+
     if args.output_json:
         results = {
             'same_step_analysis': same_step_analysis,
@@ -516,6 +927,13 @@ def main():
             },
             'step_correlations': runahead_analysis.get('step_correlations', []),
         }
+
+        if method_comparison and 'error' not in method_comparison:
+            results['method_comparison'] = {
+                'grouped_avg': method_comparison['grouped_avg'],
+                'individual_avg': method_comparison['individual_avg'],
+                'interpretation': method_comparison['interpretation'],
+            }
 
         output_path = Path(args.output_json)
         output_path.parent.mkdir(parents=True, exist_ok=True)
