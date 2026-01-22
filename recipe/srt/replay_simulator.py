@@ -85,6 +85,7 @@ class SimulatorConfig:
     max_samples: int = 0  # 0 = all samples
     verbose: bool = False
     online_update: bool = False  # Enable on-the-fly cache updates (parallel mode only)
+    skip_prefill: bool = False  # Skip cache prefill from secondary (test online-only mode)
 
 
 def _server_subprocess_main(port: int, shm_name: str, ready_event):
@@ -485,54 +486,58 @@ def _run_parallel_simulation(config: SimulatorConfig) -> Dict[str, Any]:
         hash_token_count=config.hash_token_count,
     )
 
-    # Step 1: Load and populate cache with tick N's data
-    print(f"\n[Step 1] Populating cache from {config.cache_source}/{config.cache_tick}.jsonl...")
-    cache_data = load_data(config.cache_tick, config.cache_source)
-    print(f"  Loaded {len(cache_data)} samples")
-
-    is_secondary = config.cache_source == "secondary"
-
-    # Group responses by prompt
-    prompt_to_responses = defaultdict(list)
-    for item in cache_data:
-        if is_secondary:
-            prompt_text = item['prompt']
-            response_text = item['response']
-        else:
-            prompt_text = item['input']
-            response_text = item['output']
-
-        prompt_tokens = tuple(tokenize(prompt_text).tolist())
-        response_tokens = tokenize(response_text)
-
-        if len(response_tokens) == 0:
-            continue
-
-        prompt_to_responses[prompt_tokens].append(response_tokens)
-
-    # Populate cache: start a request for each prompt, add all responses
-    # Note: We keep populate requests active so trees remain accessible via hash lookup.
-    # Trees would be removed if we called stop_request (removing hash mapping too).
-    total_added = 0
+    # Step 1: Load and populate cache with tick N's data (unless skip_prefill)
     populate_req_ids = []
-    for prompt_idx, (prompt_tokens, resp_list) in enumerate(prompt_to_responses.items()):
-        temp_req_id = f"cache_populate_{prompt_idx}"
-        prompt_arr = np.array(prompt_tokens, dtype=np.int32)
-        populate_req_ids.append(temp_req_id)
+    if config.skip_prefill:
+        print(f"\n[Step 1] Skipping cache prefill (online-only mode)")
+        print(f"  Cache starts empty - will only use online updates during simulation")
+    else:
+        print(f"\n[Step 1] Populating cache from {config.cache_source}/{config.cache_tick}.jsonl...")
+        cache_data = load_data(config.cache_tick, config.cache_source)
+        print(f"  Loaded {len(cache_data)} samples")
 
-        # Start request (creates/reuses tree based on hash)
-        cache.start_request(temp_req_id, prompt_arr)
+        is_secondary = config.cache_source == "secondary"
 
-        # Add all responses to the tree
-        for resp_tokens in resp_list:
-            # Add prompt + response to tree to build the suffix patterns
-            full_sequence = np.concatenate([prompt_arr, resp_tokens])
-            cache.add_tokens(temp_req_id, full_sequence)
-            total_added += 1
+        # Group responses by prompt
+        prompt_to_responses = defaultdict(list)
+        for item in cache_data:
+            if is_secondary:
+                prompt_text = item['prompt']
+                response_text = item['response']
+            else:
+                prompt_text = item['input']
+                response_text = item['output']
 
-    print(f"  Cache populated with {total_added} responses from {len(prompt_to_responses)} unique prompts")
-    stats = cache.get_stats()
-    print(f"  Forest stats: {stats['num_trees_in_forest']} trees, {stats['num_active_requests']} active requests")
+            prompt_tokens = tuple(tokenize(prompt_text).tolist())
+            response_tokens = tokenize(response_text)
+
+            if len(response_tokens) == 0:
+                continue
+
+            prompt_to_responses[prompt_tokens].append(response_tokens)
+
+        # Populate cache: start a request for each prompt, add all responses
+        # Note: We keep populate requests active so trees remain accessible via hash lookup.
+        # Trees would be removed if we called stop_request (removing hash mapping too).
+        total_added = 0
+        for prompt_idx, (prompt_tokens, resp_list) in enumerate(prompt_to_responses.items()):
+            temp_req_id = f"cache_populate_{prompt_idx}"
+            prompt_arr = np.array(prompt_tokens, dtype=np.int32)
+            populate_req_ids.append(temp_req_id)
+
+            # Start request (creates/reuses tree based on hash)
+            cache.start_request(temp_req_id, prompt_arr)
+
+            # Add all responses to the tree
+            for resp_tokens in resp_list:
+                # Add prompt + response to tree to build the suffix patterns
+                full_sequence = np.concatenate([prompt_arr, resp_tokens])
+                cache.add_tokens(temp_req_id, full_sequence)
+                total_added += 1
+
+        print(f"  Cache populated with {total_added} responses from {len(prompt_to_responses)} unique prompts")
+        stats = cache.get_stats()
+        print(f"  Forest stats: {stats['num_trees_in_forest']} trees, {stats['num_active_requests']} active requests")
 
     # Step 2: Run simulation for tick N+1
     print(f"\n[Step 2] Running simulation on rollout/{config.sim_tick}.jsonl...")
@@ -623,37 +628,80 @@ def _run_parallel_simulation(config: SimulatorConfig) -> Dict[str, Any]:
         total_spec = sum(s["num_spec_toks"] for s in steps)
         total_out = sum(s["num_out_toks"] for s in steps)
 
+        # Hit rate: fraction of steps where cache returned draft tokens
+        steps_with_drafts = sum(1 for s in steps if s["num_spec_toks"] > 0)
+        hit_rate = steps_with_drafts / len(steps) if steps else 0.0
+
+        # Draft contribution: fraction of output tokens that came from accepted drafts
+        # (vs. bonus tokens from model verification)
+        draft_contribution = total_accept / total_out if total_out > 0 else 0.0
+
+        # Tokens per step when cache hits (excluding miss steps)
+        hit_steps_out = sum(s["num_out_toks"] for s in steps if s["num_spec_toks"] > 0)
+        tokens_per_hit_step = hit_steps_out / steps_with_drafts if steps_with_drafts > 0 else 0.0
+
         result = {
             "request_id": request_id,
             "prompt_len": len(prompt),
             "response_len": len(ground_truth),
             "total_steps": len(steps),
+            "steps_with_drafts": steps_with_drafts,
             "total_accept_toks": total_accept,
             "total_spec_toks": total_spec,
+            "total_out_toks": total_out,
+            "hit_rate": hit_rate,
             "acceptance_rate": total_accept / total_spec if total_spec > 0 else 0.0,
             "tokens_per_step": total_out / len(steps) if steps else 0.0,
+            "tokens_per_hit_step": tokens_per_hit_step,
+            "draft_contribution": draft_contribution,
         }
         results.append(result)
 
         if config.verbose or (i + 1) % 100 == 0:
             print(f"  [{i+1}/{len(sim_data)}] "
                   f"steps={result['total_steps']}, "
+                  f"hit_rate={result['hit_rate']:.3f}, "
                   f"accept_rate={result['acceptance_rate']:.3f}, "
-                  f"toks/step={result['tokens_per_step']:.2f}")
+                  f"toks/step={result['tokens_per_step']:.2f}, "
+                  f"toks/hit={result['tokens_per_hit_step']:.2f}, "
+                  f"draft_contrib={result['draft_contribution']:.3f}")
 
     # Compute aggregates
     total_steps = sum(r["total_steps"] for r in results)
+    total_steps_with_drafts = sum(r["steps_with_drafts"] for r in results)
     total_accept = sum(r["total_accept_toks"] for r in results)
     total_spec = sum(r["total_spec_toks"] for r in results)
-    total_out = sum(r["total_steps"] * r["tokens_per_step"] for r in results)
+    total_out = sum(r["total_out_toks"] for r in results)
+
+    # Hit rate: fraction of steps where cache returned drafts
+    mean_hit_rate = total_steps_with_drafts / total_steps if total_steps > 0 else 0.0
+
+    # Draft contribution: what fraction of all output tokens came from accepted drafts
+    mean_draft_contribution = total_accept / total_out if total_out > 0 else 0.0
+
+    # Tokens per hit step (only counting steps where speculation happened)
+    hit_steps_out = sum(
+        sum(1 for s in range(r["total_steps"]) if True)  # We need per-step data
+        for r in results
+    )
+    # Approximate: use weighted average from per-request metrics
+    mean_tokens_per_hit_step = (
+        sum(r["tokens_per_hit_step"] * r["steps_with_drafts"] for r in results) / total_steps_with_drafts
+        if total_steps_with_drafts > 0 else 0.0
+    )
 
     summary = {
         "num_requests": len(results),
         "total_steps": total_steps,
+        "total_steps_with_drafts": total_steps_with_drafts,
         "total_accept_toks": total_accept,
         "total_spec_toks": total_spec,
+        "total_out_toks": total_out,
+        "mean_hit_rate": mean_hit_rate,
         "mean_acceptance_rate": total_accept / total_spec if total_spec > 0 else 0.0,
         "mean_tokens_per_step": total_out / total_steps if total_steps > 0 else 0.0,
+        "mean_tokens_per_hit_step": mean_tokens_per_hit_step,
+        "mean_draft_contribution": mean_draft_contribution,
         "requests": results,
     }
 
@@ -778,23 +826,43 @@ def print_results(result: Dict[str, Any]):
     print("=" * 60)
     print(f"  Requests simulated:    {result['num_requests']}")
     print(f"  Total decoding steps:  {result['total_steps']}")
+    print(f"  Steps with drafts:     {result.get('total_steps_with_drafts', 'N/A')}")
     print(f"  Total speculated toks: {result['total_spec_toks']}")
     print(f"  Total accepted toks:   {result['total_accept_toks']}")
+    print(f"  Total output toks:     {result.get('total_out_toks', 'N/A')}")
     print("-" * 60)
+    if 'mean_hit_rate' in result:
+        print(f"  Mean hit rate:         {result['mean_hit_rate']:.4f} ({result['mean_hit_rate']*100:.2f}%)")
     print(f"  Mean acceptance rate:  {result['mean_acceptance_rate']:.4f} ({result['mean_acceptance_rate']*100:.2f}%)")
     print(f"  Mean tokens/step:      {result['mean_tokens_per_step']:.3f}")
+    if 'mean_tokens_per_hit_step' in result:
+        print(f"  Mean tokens/hit step:  {result['mean_tokens_per_hit_step']:.3f}")
+    if 'mean_draft_contribution' in result:
+        print(f"  Mean draft contrib:    {result['mean_draft_contribution']:.4f} ({result['mean_draft_contribution']*100:.2f}%)")
     print("=" * 60)
 
     # Per-request statistics
     if result.get('requests'):
+        hit_rates = [r.get('hit_rate', 0) for r in result['requests']]
         accept_rates = [r['acceptance_rate'] for r in result['requests']]
         toks_per_step = [r['tokens_per_step'] for r in result['requests']]
+        toks_per_hit = [r.get('tokens_per_hit_step', 0) for r in result['requests']]
+        draft_contribs = [r.get('draft_contribution', 0) for r in result['requests']]
 
         print("\nPer-Request Statistics:")
-        print(f"  Acceptance rate: min={min(accept_rates):.3f}, max={max(accept_rates):.3f}, "
+        if any(hit_rates):
+            print(f"  Hit rate:          min={min(hit_rates):.3f}, max={max(hit_rates):.3f}, "
+                  f"median={np.median(hit_rates):.3f}")
+        print(f"  Acceptance rate:   min={min(accept_rates):.3f}, max={max(accept_rates):.3f}, "
               f"median={np.median(accept_rates):.3f}")
-        print(f"  Tokens/step:     min={min(toks_per_step):.2f}, max={max(toks_per_step):.2f}, "
+        print(f"  Tokens/step:       min={min(toks_per_step):.2f}, max={max(toks_per_step):.2f}, "
               f"median={np.median(toks_per_step):.2f}")
+        if any(toks_per_hit):
+            print(f"  Tokens/hit step:   min={min(toks_per_hit):.2f}, max={max(toks_per_hit):.2f}, "
+                  f"median={np.median(toks_per_hit):.2f}")
+        if any(draft_contribs):
+            print(f"  Draft contrib:     min={min(draft_contribs):.3f}, max={max(draft_contribs):.3f}, "
+                  f"median={np.median(draft_contribs):.3f}")
 
 
 def main():
@@ -853,6 +921,8 @@ def main():
                         help="Verbose output")
     parser.add_argument("--online_update", action="store_true",
                         help="Enable on-the-fly cache updates during simulation (parallel mode only)")
+    parser.add_argument("--skip_prefill", action="store_true",
+                        help="Skip cache prefill from secondary (test online-only mode)")
 
     args = parser.parse_args()
 
@@ -876,6 +946,7 @@ def main():
         max_samples=args.max_samples,
         verbose=args.verbose,
         online_update=args.online_update,
+        skip_prefill=args.skip_prefill,
     )
 
     result = run_simulation(config)
