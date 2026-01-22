@@ -7,7 +7,7 @@
 set -xeuo pipefail
 
 project_name='DAPO'
-exp_name='DAPO-Qwen2.5-7b-MATH-SRT-Runahead'
+exp_name='DAPO-Qwen3-8B-SRT-Runahead'
 
 adv_estimator=grpo
 
@@ -140,7 +140,7 @@ python3 -m recipe.srt.main_ppo \
     trainer.nnodes="${NNODES}" \
     trainer.val_before_train=True \
     trainer.test_freq=10 \
-    trainer.save_freq=200 \
+    trainer.save_freq=1 \
     trainer.total_epochs=10 \
     trainer.total_training_steps=200 \
     trainer.default_local_dir="${CKPTS_DIR}" \
