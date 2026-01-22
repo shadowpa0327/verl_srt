@@ -138,12 +138,16 @@ def calculate_correlation(pairs: List[Tuple[float, float]]) -> Tuple[float, floa
     return pearson, spearman
 
 
-def analyze_same_step_correlation(
+def analyze_prompt_level_correlation(
     primary_by_step: Dict[int, Dict[str, List[int]]],
     secondary_by_step: Dict[int, Dict[str, List[int]]],
     min_samples: int = 8
 ) -> Dict:
-    """Analyze correlation between secondary and primary for same prompts (any step)."""
+    """Analyze correlation between secondary and primary output lengths per prompt.
+
+    Aggregates all outputs across all training steps for each prompt,
+    then computes correlation between per-prompt means.
+    """
 
     # Aggregate by prompt across all steps
     primary_agg = defaultdict(list)
@@ -725,25 +729,25 @@ def plot_all_steps_grid(
     return output_path
 
 
-def print_results(same_step: Dict, runahead: Dict):
+def print_results(prompt_level: Dict, runahead: Dict):
     """Print analysis results to console."""
 
     print("=" * 80)
-    print("SAME-STEP CORRELATION: SECONDARY vs PRIMARY (same prompts)")
+    print("PROMPT-LEVEL CORRELATION: SECONDARY vs PRIMARY (aggregated across steps)")
     print("=" * 80)
 
-    if 'error' not in same_step:
-        print(f"\nCommon prompts: {same_step['common_prompts']}")
-        print(f"Pearson correlation:  {same_step['pearson_correlation']:.4f}")
-        print(f"Spearman correlation: {same_step['spearman_correlation']:.4f}")
+    if 'error' not in prompt_level:
+        print(f"\nCommon prompts: {prompt_level['common_prompts']}")
+        print(f"Pearson correlation:  {prompt_level['pearson_correlation']:.4f}")
+        print(f"Spearman correlation: {prompt_level['spearman_correlation']:.4f}")
 
         print("\nQuartile prediction accuracy:")
-        for q_name, q_data in same_step['quartile_accuracy'].items():
+        for q_name, q_data in prompt_level['quartile_accuracy'].items():
             print(f"  {q_name}: {q_data['match_rate']*100:.1f}% match "
                   f"(sec={q_data['secondary_mean']:.0f}, pri={q_data['primary_mean']:.0f})")
 
         print("\nLong output prediction:")
-        for level, data in same_step['prediction_accuracy'].items():
+        for level, data in prompt_level['prediction_accuracy'].items():
             print(f"  {level}: precision={data['precision']*100:.1f}%, "
                   f"recall={data['recall']*100:.1f}% ({data['overlap']}/{data['predicted']})")
 
@@ -785,7 +789,7 @@ def print_results(same_step: Dict, runahead: Dict):
 ┌─────────────────────────────────────────────────────────────────────────┐
 │ RUNAHEAD PREDICTION EFFECTIVENESS                                       │
 ├─────────────────────────────────────────────────────────────────────────┤
-│ Same-step Pearson:    {same_step['pearson_correlation']:.4f}                                          │
+│ Prompt-level Pearson: {prompt_level['pearson_correlation']:.4f}                                          │
 │ Next-step Pearson:    {runahead['pearson_correlation']:.4f}                                          │
 ├─────────────────────────────────────────────────────────────────────────┤
 │ Q1 (short) accuracy:  {runahead['quartile_accuracy']['Q1']['match_rate']*100:.1f}%                                            │
@@ -849,8 +853,8 @@ def main():
     print("\nLoading data by step...")
     primary_by_step, secondary_by_step = load_data_by_step(data_dir, tokenizer, args.verbose)
 
-    print("\nAnalyzing same-step correlation...")
-    same_step_analysis = analyze_same_step_correlation(
+    print("\nAnalyzing prompt-level correlation...")
+    prompt_level_analysis = analyze_prompt_level_correlation(
         primary_by_step, secondary_by_step, min_samples=8
     )
 
@@ -859,7 +863,7 @@ def main():
         primary_by_step, secondary_by_step, min_samples=args.min_samples
     )
 
-    print_results(same_step_analysis, runahead_analysis)
+    print_results(prompt_level_analysis, runahead_analysis)
 
     # Method comparison
     method_comparison = None
@@ -920,7 +924,7 @@ def main():
 
     if args.output_json:
         results = {
-            'same_step_analysis': same_step_analysis,
+            'prompt_level_analysis': prompt_level_analysis,
             'runahead_analysis': {
                 k: v for k, v in runahead_analysis.items()
                 if k != 'step_correlations'  # Exclude detailed per-step data

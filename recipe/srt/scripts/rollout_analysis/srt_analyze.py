@@ -320,7 +320,7 @@ def cmd_prediction(args):
     """Analyze runahead prediction correlation."""
     from recipe.srt.scripts.rollout_analysis.analyze_runahead_prediction import (
         analyze_runahead_correlation,
-        analyze_same_step_correlation,
+        analyze_prompt_level_correlation,
         compare_correlation_methods,
         load_data_by_step,
         plot_all_steps_grid,
@@ -339,8 +339,8 @@ def cmd_prediction(args):
     print("\nLoading data by step...")
     primary_by_step, secondary_by_step = load_data_by_step(data_dir, tokenizer, args.verbose)
 
-    print("\nAnalyzing same-step correlation...")
-    same_step_analysis = analyze_same_step_correlation(
+    print("\nAnalyzing prompt-level correlation...")
+    prompt_level_analysis = analyze_prompt_level_correlation(
         primary_by_step, secondary_by_step, min_samples=8
     )
 
@@ -349,7 +349,7 @@ def cmd_prediction(args):
         primary_by_step, secondary_by_step, min_samples=args.min_samples
     )
 
-    print_results(same_step_analysis, runahead_analysis)
+    print_results(prompt_level_analysis, runahead_analysis)
 
     # Method comparison
     if args.compare_methods:
