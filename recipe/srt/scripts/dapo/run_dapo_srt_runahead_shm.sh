@@ -151,4 +151,6 @@ python3 -m recipe.srt.main_ppo \
     +trainer.runahead.max_queue_size=999999 \
     +trainer.runahead.secondary_priority=10 \
     +trainer.runahead.abort_grace_s=1.0 \
+    trainer.rollout_data_dir="${ROLLOUT_DATA_DIR}" \
+    +trainer.secondary_data_dir="${SECONDARY_DATA_DIR}" \
     "$@"
