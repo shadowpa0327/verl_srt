@@ -1,13 +1,21 @@
 #!/usr/bin/env bash
-# SRT DAPO Script (Runahead + Shared Memory Mode)
+# SRT DAPO Script (Runahead + Snapshot Mode with In-Flight Updates)
 #
-# Based on recipe/dapo/test_dapo_7b_math.sh
-# Added: SRT, runahead, and shared memory cache configuration
+# Based on run_dapo_srt_runahead_shm.sh
+# Uses SNAPSHOT mode instead of shared memory, with in-flight updates enabled.
+#
+# Key differences from shared_memory mode:
+# - srt_cache_mode=snapshot: Trees loaded via worker snapshots (not shared memory)
+# - srt_enable_in_flight_updates=true: Add sampled tokens to trees during speculation
+# - No gRPC cache server required
+#
+# In-flight updates allow newly sampled tokens to immediately become available
+# for future speculation within the same batch, improving speculation hit rate.
 
 set -xeuo pipefail
 
 project_name='DAPO'
-exp_name='DAPO-Qwen3-8B-SRT-Runahead'
+exp_name='DAPO-Qwen3-8B-SRT-Runahead-Snapshot'
 
 adv_estimator=grpo
 
@@ -27,7 +35,7 @@ overlong_penalty_factor=1.0
 
 loss_agg_mode="token-mean"
 
-train_prompt_bsz=32
+train_prompt_bsz=64
 n_resp_per_prompt=16
 train_prompt_mini_bsz=8
 
@@ -123,10 +131,11 @@ python3 -m recipe.srt.main_ppo \
     actor_rollout_ref.ref.ulysses_sequence_parallel_size=${sp_size} \
     actor_rollout_ref.actor.fsdp_config.fsdp_size=${fsdp_size} \
     +actor_rollout_ref.rollout.enable_srt=true \
-    +actor_rollout_ref.rollout.srt_cache_mode=shared_memory \
+    +actor_rollout_ref.rollout.srt_cache_mode=snapshot \
     +actor_rollout_ref.rollout.srt_max_tree_depth=32 \
     +actor_rollout_ref.rollout.srt_hash_token_count=64 \
     +actor_rollout_ref.rollout.srt_num_speculative_tokens=5 \
+    +actor_rollout_ref.rollout.srt_enable_in_flight_updates=true \
     reward_model.reward_manager=dapo \
     +reward_model.reward_kwargs.overlong_buffer_cfg.enable=${enable_overlong_buffer} \
     +reward_model.reward_kwargs.overlong_buffer_cfg.len=${overlong_buffer_len} \
