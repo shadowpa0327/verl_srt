@@ -175,9 +175,8 @@ class ParallelSuffixDecodingProposer:
 
         # BATCH ADD TOKENS: Add all newly sampled tokens in parallel
         # Only add tokens if in-flight updates are enabled
-        # if self.enable_in_flight_updates and req_ids_to_add_tokens:
-        #     print("Batch adding tokens to suffix cache for requests:", req_ids_to_add_tokens)
-        #     self.suffix_cache.batch_add_tokens(req_ids_to_add_tokens, tokens_to_add)
+        if self.enable_in_flight_updates and req_ids_to_add_tokens:
+            self.suffix_cache.batch_add_tokens(req_ids_to_add_tokens, tokens_to_add)
 
         # OPTIMIZED BATCH SPECULATE: Use propose_from_batch for zero-copy context extraction
         drafts = []
