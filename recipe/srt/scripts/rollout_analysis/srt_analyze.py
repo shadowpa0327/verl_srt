@@ -21,6 +21,12 @@ Usage:
 
     # Single tick simulation
     srt_analyze single /path/to/rollout_data --cache-tick 5 --sim-tick 6
+
+    # Analyze within-prompt output length variance
+    srt_analyze variance /path/to/rollout_data
+
+    # Analyze runahead prediction with plots
+    srt_analyze prediction /path/to/rollout_data --plot --compare-methods
 """
 
 import argparse
@@ -268,6 +274,131 @@ def cmd_full(args):
     return 0
 
 
+def cmd_variance(args):
+    """Analyze within-prompt output length variance."""
+    from recipe.srt.scripts.rollout_analysis.analyze_lengths import (
+        analyze_within_prompt_variance,
+        load_primary_data,
+        print_variance_results,
+    )
+    from transformers import AutoTokenizer
+
+    data_dir = Path(args.data_dir)
+
+    print("Loading tokenizer...")
+    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, trust_remote_code=True)
+
+    print("\nLoading primary data...")
+    primary_data = load_primary_data(data_dir, tokenizer, args.verbose)
+
+    print("Analyzing within-prompt variance...")
+    variance_analysis = analyze_within_prompt_variance(primary_data, args.min_samples)
+
+    print_variance_results(variance_analysis)
+
+    if args.output_json:
+        if 'error' not in variance_analysis:
+            results = {
+                'cv_distribution': variance_analysis['cv_distribution'],
+                'range_distribution': variance_analysis['range_distribution'],
+                'variance_categories': variance_analysis['variance_categories'],
+                'variance_accuracy': variance_analysis['variance_accuracy'],
+                'cv_length_correlation': variance_analysis['cv_length_correlation'],
+                'correct_vs_incorrect': variance_analysis['correct_vs_incorrect'],
+            }
+
+            output_path = Path(args.output_json)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(output_path, 'w') as f:
+                json.dump(results, f, indent=2)
+            print(f"\nResults saved to: {output_path}")
+
+    return 0
+
+
+def cmd_prediction(args):
+    """Analyze runahead prediction correlation."""
+    from recipe.srt.scripts.rollout_analysis.analyze_runahead_prediction import (
+        analyze_runahead_correlation,
+        analyze_prompt_level_correlation,
+        compare_correlation_methods,
+        load_data_by_step,
+        plot_all_steps_grid,
+        plot_correlation_over_steps,
+        plot_scatter_examples,
+        print_results,
+        MATPLOTLIB_AVAILABLE,
+    )
+    from transformers import AutoTokenizer
+
+    data_dir = Path(args.data_dir)
+
+    print("Loading tokenizer...")
+    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, trust_remote_code=True)
+
+    print("\nLoading data by step...")
+    primary_by_step, secondary_by_step = load_data_by_step(data_dir, tokenizer, args.verbose)
+
+    print("\nAnalyzing prompt-level correlation...")
+    prompt_level_analysis = analyze_prompt_level_correlation(
+        primary_by_step, secondary_by_step, min_samples=8
+    )
+
+    print("Analyzing runahead prediction (secondary[N] -> primary[N+1])...")
+    runahead_analysis = analyze_runahead_correlation(
+        primary_by_step, secondary_by_step, min_samples=args.min_samples
+    )
+
+    print_results(prompt_level_analysis, runahead_analysis)
+
+    # Method comparison
+    if args.compare_methods:
+        print("\nComparing correlation methods...")
+        method_comparison = compare_correlation_methods(
+            primary_by_step, secondary_by_step, min_samples=args.min_samples
+        )
+        if 'error' not in method_comparison:
+            print("\n" + "=" * 80)
+            print("CORRELATION METHOD COMPARISON")
+            print("=" * 80)
+            print(f"\nMethod 1 (Mean per prompt): Overall avg r = {method_comparison['grouped_avg']:.3f}")
+            print(f"Method 2 (Individual pairs): Overall avg r = {method_comparison['individual_avg']:.3f}")
+            print(f"\nInterpretation:")
+            print(f"  {method_comparison['interpretation']}")
+
+    # Generate plots
+    if args.plot:
+        output_dir = Path(args.output_dir)
+        print(f"\nGenerating plots in {output_dir}...")
+
+        step_correlations = runahead_analysis.get('step_correlations', [])
+
+        if not MATPLOTLIB_AVAILABLE:
+            print("Warning: matplotlib not available, cannot generate plots")
+        elif step_correlations:
+            path1 = plot_correlation_over_steps(step_correlations, output_dir, args.dpi)
+            if path1:
+                print(f"  Generated: {path1}")
+
+            path2 = plot_scatter_examples(
+                step_correlations, primary_by_step, secondary_by_step,
+                output_dir, args.dpi, args.min_samples
+            )
+            if path2:
+                print(f"  Generated: {path2}")
+
+            path3 = plot_all_steps_grid(
+                step_correlations, primary_by_step, secondary_by_step,
+                output_dir, args.dpi, args.min_samples
+            )
+            if path3:
+                print(f"  Generated: {path3}")
+        else:
+            print("  No step correlations available for plotting")
+
+    return 0
+
+
 def cmd_single(args):
     """Run single tick simulation."""
     import sys
@@ -430,6 +561,12 @@ Examples:
 
   # Single tick simulation
   srt_analyze single /path/to/rollout_data --cache-tick 5 --sim-tick 6
+
+  # Analyze within-prompt variance
+  srt_analyze variance /path/to/rollout_data
+
+  # Analyze runahead prediction with plots
+  srt_analyze prediction /path/to/rollout_data --plot --compare-methods
         """,
     )
 
@@ -531,6 +668,42 @@ Examples:
     full_parser.add_argument("-v", "--verbose", action="store_true",
                              help="Verbose output")
     full_parser.set_defaults(func=cmd_full)
+
+    # =========================================================================
+    # Variance command
+    # =========================================================================
+    variance_parser = subparsers.add_parser("variance", help="Analyze within-prompt output length variance")
+    variance_parser.add_argument("data_dir", type=str, help="Path to rollout data directory")
+    variance_parser.add_argument("--tokenizer", type=str, default="Qwen/Qwen2.5-7B-Instruct",
+                                 help="Tokenizer model name or path")
+    variance_parser.add_argument("--min-samples", type=int, default=8,
+                                 help="Minimum samples per prompt (default: 8)")
+    variance_parser.add_argument("--output-json", type=str, default=None,
+                                 help="Save results to JSON file")
+    variance_parser.add_argument("-v", "--verbose", action="store_true",
+                                 help="Verbose output")
+    variance_parser.set_defaults(func=cmd_variance)
+
+    # =========================================================================
+    # Prediction command
+    # =========================================================================
+    prediction_parser = subparsers.add_parser("prediction", help="Analyze runahead prediction correlation")
+    prediction_parser.add_argument("data_dir", type=str, help="Path to rollout data directory")
+    prediction_parser.add_argument("--tokenizer", type=str, default="Qwen/Qwen2.5-7B-Instruct",
+                                   help="Tokenizer model name or path")
+    prediction_parser.add_argument("--min-samples", type=int, default=4,
+                                   help="Minimum samples per prompt (default: 4)")
+    prediction_parser.add_argument("--plot", action="store_true",
+                                   help="Generate visualization plots")
+    prediction_parser.add_argument("--output-dir", type=str, default="./prediction_plots",
+                                   help="Directory for saving plots")
+    prediction_parser.add_argument("--dpi", type=int, default=150,
+                                   help="Plot resolution (default: 150)")
+    prediction_parser.add_argument("--compare-methods", action="store_true",
+                                   help="Compare grouped vs individual correlation methods")
+    prediction_parser.add_argument("-v", "--verbose", action="store_true",
+                                   help="Verbose output")
+    prediction_parser.set_defaults(func=cmd_prediction)
 
     # =========================================================================
     # Single command

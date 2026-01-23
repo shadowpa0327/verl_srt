@@ -170,6 +170,8 @@ class SRTRayPPOTrainer(RayPPOTrainer):
             shm_config = OmegaConf.to_container(shm_config, resolve=True) if shm_config else {}
 
         # Store SRT config for later use (before removing from rollout_config)
+        # Default for in_flight_updates: True for snapshot mode, False for shared_memory
+        default_in_flight_updates = cache_mode != "shared_memory"
         self._srt_config = {
             "enable_srt": enable_srt,
             "srt_cache_mode": cache_mode,
@@ -177,6 +179,7 @@ class SRTRayPPOTrainer(RayPPOTrainer):
             "srt_hash_token_count": rollout_config.get("srt_hash_token_count", 128),
             "srt_num_speculative_tokens": rollout_config.get("srt_num_speculative_tokens", 24),
             "srt_enable_runahead_speculation": rollout_config.get("srt_enable_runahead_speculation", False),
+            "srt_enable_in_flight_updates": rollout_config.get("srt_enable_in_flight_updates", default_in_flight_updates),
             "srt_shared_memory": {
                 "port": shm_config.get("port", 6378),
                 "memory_size_gb": shm_config.get("memory_size_gb", 100),
@@ -194,6 +197,7 @@ class SRTRayPPOTrainer(RayPPOTrainer):
             "srt_hash_token_count",
             "srt_num_speculative_tokens",
             "srt_enable_runahead_speculation",
+            "srt_enable_in_flight_updates",
             "srt_shared_memory",
         ]
         with open_dict(config):
@@ -239,7 +243,7 @@ class SRTRayPPOTrainer(RayPPOTrainer):
                     "srt_max_tree_depth": max_tree_depth,
                     "srt_max_spec_factor": 1.0,
                     "srt_min_token_prob": 0.1,
-                    "srt_enable_in_flight_updates": False,  # Disabled for shared_memory
+                    "srt_enable_in_flight_updates": self._srt_config["srt_enable_in_flight_updates"],
                     "srt_cache_mode": "shared_memory",
                     "srt_enable_runahead_speculation": self._srt_config.get("srt_enable_runahead_speculation", False),
                     # Shared memory specific params
@@ -268,7 +272,7 @@ class SRTRayPPOTrainer(RayPPOTrainer):
                     "srt_max_tree_depth": max_tree_depth,
                     "srt_max_spec_factor": 1.0,
                     "srt_min_token_prob": 0.1,
-                    "srt_enable_in_flight_updates": True,
+                    "srt_enable_in_flight_updates": self._srt_config["srt_enable_in_flight_updates"],
                     "srt_enable_runahead_speculation": self._srt_config.get("srt_enable_runahead_speculation", False),
                 }
 

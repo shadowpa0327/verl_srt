@@ -297,13 +297,17 @@ recipe/srt/
 ├── replay_simulator.py                    # Core simulation script
 └── scripts/rollout_analysis/
     ├── SPECULATION_METRICS.md             # This document
-    └── draft_contribution_sweep/
-        ├── sweep_draft_contribution.py    # Main sweep script
-        ├── reproduce_analysis.sh          # Full reproduction script
-        ├── per_request_data.csv           # Generated data
-        ├── sweep_summary.json             # Aggregated results
-        │
-        │   # Generated Figures:
+    ├── srt_analyze.py                     # Unified CLI tool
+    ├── sweep_runner.py                    # Sweep execution logic
+    ├── figure_generator.py                # Figure generation
+    ├── analysis_config.py                 # Configuration classes
+    ├── data_discovery.py                  # Data directory utilities
+    ├── reproduce.sh                       # 1-click reproduction script
+    │
+    │   # Output files (generated in output directory):
+    ├── per_request_data.csv               # Generated per-request data
+    ├── sweep_summary.json                 # Aggregated results
+    └── figures/                           # Generated figures directory
         ├── three_mode_comparison.png      # Fig 1: 4 metrics over training ticks
         ├── three_mode_bars.png            # Fig 2: Bar chart comparing 3 modes
         ├── speedup_decomposition.png      # Fig 3: Speedup contribution breakdown
@@ -324,30 +328,40 @@ This runs simulation across multiple training ticks with all three modes.
 cd /home/ubuntu/verl_srt
 source .venv/bin/activate
 
-python recipe/srt/scripts/rollout_analysis/draft_contribution_sweep/sweep_draft_contribution.py \
-    --model_path Qwen/Qwen2.5-7B \
-    --data_dir /home/ubuntu/verl_srt/rollout_datas_0119/DAPO/DAPO-Qwen2.5-7b-MATH-SRT-Runahead \
-    --output_dir recipe/srt/scripts/rollout_analysis/draft_contribution_sweep \
-    --tick_start 1 \
-    --tick_end 46 \
-    --tick_step 10 \
-    --min_token_prob 0.3 \
-    --min_response_len 4000 \
-    --online_only
+# Using the unified CLI tool
+python -m recipe.srt.scripts.rollout_analysis.srt_analyze sweep \
+    /home/ubuntu/verl_srt/rollout_datas_0119/DAPO/DAPO-Qwen2.5-7b-MATH-SRT-Runahead \
+    -o ./sweep_results \
+    --model Qwen/Qwen2.5-7B \
+    --tick-start 1 \
+    --tick-end 46 \
+    --tick-step 10 \
+    --min-token-prob 0.3 \
+    --min-response-len 4000
 ```
 
 **Parameters explained**:
-- `--tick_start 1 --tick_end 46 --tick_step 10`: Analyze ticks 1, 11, 21, 31, 41
-- `--min_response_len 4000`: Focus on long sequences
-- `--online_only`: Include the online-only mode (no prefill)
+- `--tick-start 1 --tick-end 46 --tick-step 10`: Analyze ticks 1, 11, 21, 31, 41
+- `--min-response-len 4000`: Focus on long sequences in summary
+- All three modes (prefill_only, online_only, prefill_plus_online) run by default
 
-**Output**: Creates `per_request_data.csv` and `sweep_summary.json`
+**Output**: Creates `per_request_data.csv` and `sweep_summary.json` in the output directory
 
 ---
 
 ### Step 2: Generate Three-Mode Comparison Figure
 
-After running the sweep, generate the comparison visualizations:
+After running the sweep, generate the comparison visualizations using the CLI:
+
+```bash
+# Generate all figures from the per-request CSV
+python -m recipe.srt.scripts.rollout_analysis.srt_analyze plot \
+    --data ./sweep_results/per_request_data.csv \
+    -o ./sweep_results/figures \
+    --min-response-len 4000
+```
+
+Alternatively, for custom figures using Python directly:
 
 ```python
 #!/usr/bin/env python3
@@ -360,7 +374,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # Configuration
-OUTPUT_DIR = "recipe/srt/scripts/rollout_analysis/draft_contribution_sweep"
+OUTPUT_DIR = "./sweep_results"  # Your output directory from sweep
 MIN_RESPONSE_LEN = 4000  # Focus on long sequences
 
 # Load data
@@ -532,7 +546,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 
-OUTPUT_DIR = "recipe/srt/scripts/rollout_analysis/draft_contribution_sweep"
+OUTPUT_DIR = "./sweep_results"  # Your output directory from sweep
 MIN_RESPONSE_LEN = 4000
 
 df = pd.read_csv(f"{OUTPUT_DIR}/per_request_data.csv")
@@ -641,7 +655,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 
-OUTPUT_DIR = "recipe/srt/scripts/rollout_analysis/draft_contribution_sweep"
+OUTPUT_DIR = "./sweep_results"  # Your output directory from sweep
 df = pd.read_csv(f"{OUTPUT_DIR}/per_request_data.csv")
 
 # Define length bins with focus on long sequences
@@ -710,7 +724,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 
-OUTPUT_DIR = "recipe/srt/scripts/rollout_analysis/draft_contribution_sweep"
+OUTPUT_DIR = "./sweep_results"  # Your output directory from sweep
 df = pd.read_csv(f"{OUTPUT_DIR}/per_request_data.csv")
 
 # Filter to long sequences
@@ -784,7 +798,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 
-OUTPUT_DIR = "recipe/srt/scripts/rollout_analysis/draft_contribution_sweep"
+OUTPUT_DIR = "./sweep_results"  # Your output directory from sweep
 MIN_RESPONSE_LEN = 4000
 
 df = pd.read_csv(f"{OUTPUT_DIR}/per_request_data.csv")
@@ -913,13 +927,16 @@ python recipe/srt/replay_simulator.py \
 
 ### Complete Reproduction Script
 
-A complete script `reproduce_analysis.sh` has been created in the `draft_contribution_sweep/` directory.
+A complete script `reproduce.sh` is available in the `rollout_analysis/` directory.
 
 To run all analysis and generate all 8 figures:
 
 ```bash
 cd /home/ubuntu/verl_srt
-./recipe/srt/scripts/rollout_analysis/draft_contribution_sweep/reproduce_analysis.sh
+./recipe/srt/scripts/rollout_analysis/reproduce.sh [DATA_DIR] [OUTPUT_DIR]
+
+# Or with defaults:
+./recipe/srt/scripts/rollout_analysis/reproduce.sh
 ```
 
 The script generates all 8 figures:
@@ -934,7 +951,7 @@ The script generates all 8 figures:
 
 View the full script:
 ```bash
-cat recipe/srt/scripts/rollout_analysis/draft_contribution_sweep/reproduce_analysis.sh
+cat recipe/srt/scripts/rollout_analysis/reproduce.sh
 ```
 
 ---
