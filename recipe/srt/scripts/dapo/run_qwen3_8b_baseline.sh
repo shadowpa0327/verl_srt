@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SRT DAPO Script (Runahead + Snapshot Mode with In-Flight Updates)
+# DAPO Script (Runahead + Snapshot Mode with In-Flight Updates)
 #
 # Based on run_dapo_srt_runahead_shm.sh
 # Uses SNAPSHOT mode instead of shared memory, with in-flight updates enabled.
@@ -14,8 +14,8 @@
 
 set -xeuo pipefail
 
-project_name='DAPO_SRT'
-exp_name='DAPO-Qwen3-8B-SRT-Runahead-Snapshot-olf'
+project_name='DAPO_SRT_Qwen3-8B'
+exp_name='Qwen3-8B-12k-filtered-data'
 
 adv_estimator=grpo
 
@@ -131,7 +131,7 @@ python3 -m recipe.srt.main_ppo \
     actor_rollout_ref.ref.fsdp_config.param_offload=${offload} \
     actor_rollout_ref.ref.ulysses_sequence_parallel_size=${sp_size} \
     actor_rollout_ref.actor.fsdp_config.fsdp_size=${fsdp_size} \
-    +actor_rollout_ref.rollout.enable_srt=true \
+    +actor_rollout_ref.rollout.enable_srt=false \
     +actor_rollout_ref.rollout.srt_cache_mode=snapshot \
     +actor_rollout_ref.rollout.srt_max_tree_depth=32 \
     +actor_rollout_ref.rollout.srt_hash_token_count=64 \
@@ -156,11 +156,4 @@ python3 -m recipe.srt.main_ppo \
     trainer.default_local_dir="${CKPTS_DIR}" \
     trainer.resume_mode=auto \
     trainer.log_val_generations=10 \
-    +trainer.enable_runahead=true \
-    +trainer.runahead.load_threshold=32 \
-    +trainer.runahead.max_queue_size=999999 \
-    +trainer.runahead.secondary_priority=10 \
-    +trainer.runahead.abort_grace_s=1.0 \
-    trainer.rollout_data_dir="${ROLLOUT_DATA_DIR}" \
-    +trainer.secondary_data_dir="${SECONDARY_DATA_DIR}" \
     "$@"
