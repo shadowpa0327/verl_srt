@@ -47,11 +47,11 @@ import numpy as np
 # Parallel cache imports
 PARALLEL_AVAILABLE = False
 ParallelSuffixDecodingCache = None
-try:
-    from srt_plugin.suffix_cache.parallel_cache import ParallelSuffixDecodingCache
-    PARALLEL_AVAILABLE = True
-except ImportError:
-    print("Warning: ParallelSuffixDecodingCache not available")
+#try:
+from srt_plugin.suffix_cache.parallel_cache import ParallelSuffixDecodingCache
+PARALLEL_AVAILABLE = True
+#except ImportError:
+#    print("Warning: ParallelSuffixDecodingCache not available")
 
 # SHM cache availability check (don't import both modules to avoid protobuf crash)
 SHM_AVAILABLE = False

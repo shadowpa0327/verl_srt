@@ -35,13 +35,13 @@ overlong_penalty_factor=1.0
 
 loss_agg_mode="token-mean"
 
-train_prompt_bsz=128
+train_prompt_bsz=64
 n_resp_per_prompt=16
-train_prompt_mini_bsz=16
+train_prompt_mini_bsz=8
 
 # Ray
 NNODES=${NNODES:-1}
-NGPUS_PER_NODE=${NGPUS_PER_NODE:-8}
+NGPUS_PER_NODE=${NGPUS_PER_NODE:-4}
 # Paths
 RAY_DATA_HOME=${RAY_DATA_HOME:-"${HOME}/verl_srt"}
 MODEL_PATH=/mnt/hdfs/ccchang_hldy/Qwen3-8B-Base
@@ -70,7 +70,7 @@ actor_ppo_max_token_len=$(((max_prompt_length + max_response_length) * 2))
 infer_ppo_max_token_len=$(((max_prompt_length + max_response_length) * 3))
 offload=True
 gen_tp=1
-fsdp_size=8
+fsdp_size=4
 
 export VERL_LOGGING_LEVEL=INFO
 export RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO=0
@@ -143,7 +143,7 @@ python3 -m recipe.srt.main_ppo \
     +reward_model.reward_kwargs.overlong_buffer_cfg.penalty_factor=${overlong_penalty_factor} \
     +reward_model.reward_kwargs.overlong_buffer_cfg.log=False \
     +reward_model.reward_kwargs.max_resp_len=${max_response_length} \
-    trainer.logger='["console","wandb"]' \
+    trainer.logger='["console"]' \
     trainer.project_name="${project_name}" \
     trainer.experiment_name="${exp_name}" \
     trainer.n_gpus_per_node="${NGPUS_PER_NODE}" \
