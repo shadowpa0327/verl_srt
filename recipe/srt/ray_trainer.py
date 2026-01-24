@@ -180,6 +180,7 @@ class SRTRayPPOTrainer(RayPPOTrainer):
             "srt_num_speculative_tokens": rollout_config.get("srt_num_speculative_tokens", 24),
             "srt_enable_runahead_speculation": rollout_config.get("srt_enable_runahead_speculation", False),
             "srt_enable_in_flight_updates": rollout_config.get("srt_enable_in_flight_updates", default_in_flight_updates),
+            "srt_save_checkpoint": rollout_config.get("srt_save_checkpoint", False),  # Disabled by default to save time
             "srt_shared_memory": {
                 "port": shm_config.get("port", 6378),
                 "memory_size_gb": shm_config.get("memory_size_gb", 100),
@@ -198,6 +199,7 @@ class SRTRayPPOTrainer(RayPPOTrainer):
             "srt_num_speculative_tokens",
             "srt_enable_runahead_speculation",
             "srt_enable_in_flight_updates",
+            "srt_save_checkpoint",
             "srt_shared_memory",
         ]
         with open_dict(config):
@@ -726,8 +728,8 @@ class SRTRayPPOTrainer(RayPPOTrainer):
         """Override _save_checkpoint to include suffix tree state."""
         super()._save_checkpoint()
 
-        # Save suffix tree state
-        if self.suffix_tree_manager.enabled:
+        # Save suffix tree state (only if enabled and srt_save_checkpoint is True)
+        if self.suffix_tree_manager.enabled and self._srt_config.get("srt_save_checkpoint", False):
             local_global_step_folder = os.path.join(
                 self.config.trainer.default_local_dir, f"global_step_{self.global_steps}"
             )
@@ -738,8 +740,8 @@ class SRTRayPPOTrainer(RayPPOTrainer):
         """Override _load_checkpoint to restore suffix tree state."""
         super()._load_checkpoint()
 
-        # Load suffix tree state
-        if self.suffix_tree_manager.enabled:
+        # Load suffix tree state (only if srt_save_checkpoint is enabled)
+        if self.suffix_tree_manager.enabled and self._srt_config.get("srt_save_checkpoint", False):
             global_step_folder = os.path.join(
                 self.config.trainer.default_local_dir, f"global_step_{self.global_steps}"
             )
