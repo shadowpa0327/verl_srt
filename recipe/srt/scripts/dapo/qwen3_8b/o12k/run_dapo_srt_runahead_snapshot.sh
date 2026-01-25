@@ -14,8 +14,8 @@
 
 set -xeuo pipefail
 
-project_name='DAPO'
-exp_name='DAPO-Qwen3-8B-SRT-Runahead-Snapshot'
+project_name='DAPO_SRT'
+exp_name='DAPO-Qwen3-8B-SRT-Runahead-Snapshot-olf'
 
 adv_estimator=grpo
 
@@ -35,24 +35,25 @@ overlong_penalty_factor=1.0
 
 loss_agg_mode="token-mean"
 
-train_prompt_bsz=64
+train_prompt_bsz=128
 n_resp_per_prompt=16
-train_prompt_mini_bsz=8
+train_prompt_mini_bsz=16
 
 # Ray
 NNODES=${NNODES:-1}
-NGPUS_PER_NODE=${NGPUS_PER_NODE:-4}
+NGPUS_PER_NODE=${NGPUS_PER_NODE:-8}
 # Paths
 RAY_DATA_HOME=${RAY_DATA_HOME:-"${HOME}/verl_srt"}
-MODEL_PATH=${MODEL_PATH:-"/home/ubuntu/verl_srt/Qwen3-8B-Base"}
-CKPTS_DIR=${CKPTS_DIR:-"${RAY_DATA_HOME}/ckpts/${project_name}/${exp_name}"}
-TRAIN_FILE=${TRAIN_FILE:-"${HOME}/verl/data/dapo-math-17k.parquet"}
-TEST_FILE=${TEST_FILE:-"${HOME}/verl/data/aime-2024.parquet"}
+MODEL_PATH=/mnt/hdfs/ccchang_hldy/Qwen3-8B-Base
+CKPTS_DIR=/mnt/hdfs/ccchang_hldy/ckpts/${project_name}/${exp_name}
+TRAIN_FILE=/mnt/hdfs/ccchang_hldy/data/dapo-math-17k-unique-fixed.parquet
+TEST_FILE=/mnt/hdfs/ccchang_hldy/data/aime-2024.parquet
 
 # Data dump directories (set to empty string to disable)
 # ROLLOUT_DATA_DIR: Directory for dumping primary rollout data (prompts, responses, scores)
 # SECONDARY_DATA_DIR: Directory for dumping secondary (runahead) data for analysis
-DATA_DUMP_BASE=${DATA_DUMP_BASE:-"/home/ubuntu/verl_srt/rollout_datas/${exp_name}"}  # Set this to enable data dumping, e.g., "${RAY_DATA_HOME}/data_dumps/${exp_name}"
+DATA_DUMP_BASE=/mnt/hdfs/ccchang_hldy/rollout_datas/${exp_name}
+# Set this to enable data dumping, e.g., "${RAY_DATA_HOME}/data_dumps/${exp_name}"
 ROLLOUT_DATA_DIR=${ROLLOUT_DATA_DIR:-"${DATA_DUMP_BASE:+${DATA_DUMP_BASE}/rollout}"}
 SECONDARY_DATA_DIR=${SECONDARY_DATA_DIR:-"${DATA_DUMP_BASE:+${DATA_DUMP_BASE}/secondary}"}
 
@@ -63,13 +64,13 @@ top_k=-1
 val_top_p=0.7
 
 # Performance Related Parameter
-sp_size=2
+sp_size=4
 use_dynamic_bsz=True
 actor_ppo_max_token_len=$(((max_prompt_length + max_response_length) * 2))
 infer_ppo_max_token_len=$(((max_prompt_length + max_response_length) * 3))
 offload=True
 gen_tp=1
-fsdp_size=4
+fsdp_size=8
 
 export VERL_LOGGING_LEVEL=INFO
 export RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO=0
@@ -149,7 +150,7 @@ python3 -m recipe.srt.main_ppo \
     trainer.nnodes="${NNODES}" \
     trainer.val_before_train=True \
     trainer.test_freq=10 \
-    trainer.save_freq=1 \
+    trainer.save_freq=10 \
     trainer.total_epochs=10 \
     trainer.total_training_steps=200 \
     trainer.default_local_dir="${CKPTS_DIR}" \

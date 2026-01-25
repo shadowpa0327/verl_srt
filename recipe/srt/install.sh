@@ -104,7 +104,7 @@ fi
 
 # Install pip dependencies
 print_header "Installing pip dependencies"
-pip install --upgrade pip setuptools wheel
+#pip install --upgrade pip setuptools wheel
 pip install cmake ninja nanobind pybind11 numpy
 
 # Build and install the package
