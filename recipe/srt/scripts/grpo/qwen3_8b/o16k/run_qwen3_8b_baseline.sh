@@ -95,7 +95,7 @@ export VERL_LOGGING_LEVEL=INFO
 # Main Training Script
 # ============================================
 
-python3 -m verl.trainer.main_ppo \
+python3 -m recipe.srt.main_ppo \
     algorithm.adv_estimator=${adv_estimator} \
     algorithm.use_kl_in_reward=${use_kl_in_reward} \
     algorithm.kl_ctrl.kl_coef=${kl_coef} \
