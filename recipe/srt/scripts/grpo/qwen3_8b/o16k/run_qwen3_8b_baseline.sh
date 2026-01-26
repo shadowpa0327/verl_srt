@@ -15,7 +15,7 @@ set -xeuo pipefail
 # Project Configuration
 # ============================================
 project_name='DAPO_SRT_Qwen3-8B'
-exp_name='Qwen3_8B-12k-GRPO-DAPO17k-filtered-data'
+exp_name='Qwen3_8B-16k-GRPO-DAPO17k-filtered-data'
 
 # ============================================
 # Paths
@@ -46,21 +46,21 @@ kl_loss_type=low_var_kl
 # Sequence Length Configuration
 # ============================================
 max_prompt_length=$((1024 * 2))    # 2048
-max_response_length=$((1024 * 12)) # 12288
+max_response_length=$((1024 * 16)) # 12288
 
 # ============================================
 # Batch Size Configuration
 # ============================================
-train_prompt_bsz=64
-n_resp_per_prompt=16
-train_prompt_mini_bsz=8
+train_prompt_bsz=128
+n_resp_per_prompt=5
+train_prompt_mini_bsz=32
 
 # ============================================
 # Parallel & Performance Configuration
 # ============================================
 sp_size=4
 gen_tp=1
-fsdp_size=4
+fsdp_size=8
 
 use_dynamic_bsz=True
 actor_ppo_max_token_len=$(((max_prompt_length + max_response_length) * 2))
