@@ -157,21 +157,16 @@ class SuffixDecodingProposer:
         snapshots: list[tuple[int, bytes]],
         hash_mapping: dict[str, int],
     ) -> None:
-        """Load suffix tree snapshots from serialized data.
+        """No-op for global_cache mode.
 
-        Args:
-            snapshots: List of (tree_idx, snapshot_bytes) containing serialized trees.
-            hash_mapping: Dict mapping prompt_hash -> tree_idx for tree lookup.
+        In global_cache mode, the cache is self-maintained from in-flight
+        tokens only. Snapshot loading is not supported.
         """
         import logging
 
         logger = logging.getLogger(__name__)
-
-        if not snapshots:
-            logger.debug("load_snapshot called with empty snapshots, skipping")
-            return
-
-        self.suffix_cache.load_snapshot(snapshots, hash_to_tree=hash_mapping)
-        logger.info(
-            f"Loaded {len(snapshots)} suffix trees with {len(hash_mapping)} hash mappings"
+        logger.debug(
+            "load_snapshot called on SuffixDecodingProposer (global_cache mode) - "
+            "ignoring %d snapshots (cache is self-maintained)",
+            len(snapshots) if snapshots else 0,
         )

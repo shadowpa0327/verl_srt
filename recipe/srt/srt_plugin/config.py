@@ -39,11 +39,13 @@ class SRTSuffixConfig:
     method: str = "suffix"
     num_speculative_tokens: int = 24
     max_tree_depth: int = 24
+    max_cached_requests: int = -1  # -1 = no limit on cached requests
     max_spec_factor: float = 1.0
     min_token_prob: float = 0.1
     enable_in_flight_updates: bool = True
     # Cache mode: "snapshot" for snapshot-based loading, "shared_memory" for
-    # zero-copy shared memory access via SpecRL's SuffixCache
+    # zero-copy shared memory access via SpecRL's SuffixCache, "global_cache" for
+    # self-maintained cache within each worker (no snapshot loading)
     cache_mode: str = "snapshot"
 
     # Whether to apply speculative decoding to runahead/secondary requests.
