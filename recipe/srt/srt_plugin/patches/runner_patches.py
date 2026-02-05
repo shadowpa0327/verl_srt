@@ -22,9 +22,10 @@ Patches:
 This module reads configuration from SRTSuffixConfig.get() which is populated
 by arg_utils_patches during engine initialization.
 
-Supports two cache modes:
+Supports three cache modes:
 - "snapshot": Uses ParallelSuffixDecodingProposer with snapshot-based loading
 - "shared_memory": Uses SharedMemorySuffixDecodingProposer with SpecRL's SuffixCache
+- "global_cache": Uses SuffixDecodingProposer with self-maintained cache (no snapshot loading)
 
 Note: Imports are lazy to avoid triggering CUDA initialization at module load time.
 """
@@ -203,6 +204,29 @@ def apply_patches():
                             self.drafter = ParallelSuffixDecodingProposer(
                                 num_speculative_tokens=srt_config.num_speculative_tokens,
                                 max_tree_depth=srt_config.max_tree_depth,
+                                max_spec_factor=srt_config.max_spec_factor,
+                                min_token_prob=srt_config.min_token_prob,
+                                max_model_len=vllm_config.model_config.max_model_len,
+                                enable_in_flight_updates=srt_config.enable_in_flight_updates,
+                                enable_runahead_speculation=srt_config.enable_runahead_speculation,
+                            )
+
+                        if cache_mode == "global_cache":
+                            # Global cache mode: SuffixDecodingProposer with self-maintained cache
+                            # (no snapshot loading, cache builds from in-flight tokens only)
+                            from recipe.srt.srt_plugin.proposers.suffix_decoding import (
+                                SuffixDecodingProposer,
+                            )
+
+                            logger.info(
+                                "Using SuffixDecodingProposer (global_cache mode, "
+                                "enable_in_flight_updates=%s)",
+                                srt_config.enable_in_flight_updates,
+                            )
+                            self.drafter = SuffixDecodingProposer(
+                                num_speculative_tokens=srt_config.num_speculative_tokens,
+                                max_tree_depth=srt_config.max_tree_depth,
+                                max_cached_requests=srt_config.max_cached_requests,
                                 max_spec_factor=srt_config.max_spec_factor,
                                 min_token_prob=srt_config.min_token_prob,
                                 max_model_len=vllm_config.model_config.max_model_len,

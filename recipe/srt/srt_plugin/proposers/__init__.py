@@ -18,10 +18,14 @@ These are standalone proposer classes that will be dynamically
 injected into vLLM's model runner via patches.
 """
 
+from recipe.srt.srt_plugin.proposers.suffix_decoding import (
+    SuffixDecodingProposer,
+)
 from recipe.srt.srt_plugin.proposers.suffix_decoding_parallel import (
     ParallelSuffixDecodingProposer,
 )
 
 __all__ = [
     "ParallelSuffixDecodingProposer",
+    "SuffixDecodingProposer",
 ]

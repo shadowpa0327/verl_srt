@@ -138,6 +138,13 @@ class SRTRayPPOTrainer(RayPPOTrainer):
                 SuffixTreeManagerConfig(enable=False), self.tokenizer
             )
             print("SRT: Using SharedMemoryCacheManager (shared_memory mode)")
+        elif cache_mode == "global_cache" and self._srt_config.get("enable_srt", False):
+            # Global cache mode: workers maintain their own caches, no trainer-side management
+            self.suffix_tree_manager = SuffixTreeManager(
+                SuffixTreeManagerConfig(enable=False), self.tokenizer
+            )
+            self.shm_cache_manager = None
+            print("SRT: Using global_cache mode (workers maintain independent caches)")
         else:
             # Snapshot mode (default): Use SuffixTreeManager
             self.suffix_tree_manager = self._init_suffix_tree_manager()
@@ -260,6 +267,35 @@ class SRTRayPPOTrainer(RayPPOTrainer):
                     f"(port={shm_config.get('port', 'default')}, "
                     f"name={shm_config.get('shared_memory_name') or 'SUFFIX_CACHE'}, "
                     f"spec_len={shm_config.get('spec_start_len', 2)}-{shm_config.get('spec_max_len', 16)})"
+                )
+
+            elif cache_mode == "global_cache":
+                # Global cache mode: Workers maintain their own caches, no snapshot pushing
+                # Uses SuffixDecodingProposer with self-maintained cache
+                # - In-flight updates are always enabled (only way to build cache)
+                # - No runahead (no cross-epoch cache benefit)
+                speculative_config = {
+                    "method": "suffix",
+                    "num_speculative_tokens": num_speculative_tokens,
+                    # SRT-specific params (extracted by SRTSuffixConfig.extract_from_dict)
+                    "srt_max_tree_depth": max_tree_depth,
+                    "srt_max_spec_factor": 1.0,
+                    "srt_min_token_prob": 0.1,
+                    "srt_enable_in_flight_updates": True,  # Always enabled for global_cache
+                    "srt_enable_runahead_speculation": False,  # No runahead for global_cache
+                    "srt_cache_mode": "global_cache",
+                }
+
+                # Merge with existing speculative_config if present
+                existing_spec_config = vllm_kwargs.get("speculative_config")
+                if existing_spec_config is not None:
+                    if isinstance(existing_spec_config, dict):
+                        speculative_config.update(existing_spec_config)
+
+                vllm_kwargs.speculative_config = speculative_config
+
+                print(
+                    f"SRT: Configured for global_cache mode with speculative_config: {speculative_config}"
                 )
 
             else:
